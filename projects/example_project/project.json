@@ -1,0 +1,59 @@
+{
+  "name": "example_project",
+  "root_path": "projects/example_project",
+  "lyrics": {
+    "en": {
+      "enabled": true,
+      "sections": [
+        "City lights run through the rain",
+        "We rise and dance through neon skies"
+      ],
+      "tone_notes": "uplifting cinematic electro"
+    },
+    "es": {
+      "enabled": false,
+      "sections": [
+        "Luces en la lluvia",
+        "Subimos en cielo neón"
+      ],
+      "tone_notes": "poetic urban"
+    }
+  },
+  "channels": [
+    {
+      "channel_id": "yt_main",
+      "language": "en",
+      "title": "Neon Pulse",
+      "description": "Futuristic city anthem",
+      "vibe": "cinematic synthwave",
+      "visual_style": "ultra-detailed neon cyberpunk",
+      "enabled": true
+    }
+  ],
+  "storyboard": {
+    "globalMood": "hopeful cyberpunk",
+    "scenes": [
+      {
+        "text": "City lights run through the rain",
+        "imagery": "rain-soaked avenue with reflective neon",
+        "type": "single",
+        "manualStart": null,
+        "manualEnd": null
+      },
+      {
+        "text": "We rise and dance through neon skies",
+        "imagery": "rooftop crowd dancing under glowing holograms",
+        "type": "pack",
+        "manualStart": null,
+        "manualEnd": null
+      }
+    ]
+  },
+  "characters": [
+    {
+      "name": "Nova",
+      "description": "Lead performer with holographic jacket",
+      "variations": ["default", "night-rain", "high-energy"]
+    }
+  ]
+}

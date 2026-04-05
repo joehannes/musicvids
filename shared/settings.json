@@ -1,0 +1,7 @@
+{
+  "suno": {"token": "", "base_url": ""},
+  "midjourney": {"discord_token": "", "proxy_url": ""},
+  "youtube": {"api_key": "", "channel_ids": []},
+  "tiktok": {"username": "", "password": ""},
+  "openai": {"api_key": ""}
+}
