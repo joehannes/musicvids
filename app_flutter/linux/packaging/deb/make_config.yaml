@@ -1,0 +1,30 @@
+display_name: MusicVids Studio
+package_name: musicvids-studio
+
+maintainer:
+  name: Hector
+  email: hector@example.com
+
+priority: optional
+section: utils
+
+installed_size: 50000
+
+essential: false
+
+icon: assets/icon.png
+
+postinstall_scripts: []
+
+keywords:
+  - video
+  - ai
+  - music
+
+generic_name: AI Video Studio
+
+categories:
+  - AudioVideo
+  - Multimedia
+
+startup_notify: true

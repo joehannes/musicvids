@@ -1,8 +1,0 @@
-[Desktop Entry]
-Name=MusicVid Studio
-Comment=Local-first AI music video generation studio
-Exec=musicvids_studio
-Icon=musicvids_studio
-Terminal=false
-Type=Application
-Categories=AudioVideo;Video;
