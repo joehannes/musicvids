@@ -5,7 +5,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/app_flutter"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.2.0}"
 ARCH="amd64"
 PKG_NAME="musicvids-studio"
 
