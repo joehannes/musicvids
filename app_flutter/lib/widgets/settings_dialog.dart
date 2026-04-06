@@ -3,6 +3,8 @@ import 'package:getwidget/getwidget.dart';
 
 import '../state/app_state.dart';
 
+import '../state/app_state.dart';
+
 class SettingsDialog extends StatefulWidget {
   final Map<String, dynamic> initial;
   const SettingsDialog({super.key, required this.initial});
@@ -131,9 +133,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 children: [
                   Text('Custom shortcuts', style: Theme.of(context).textTheme.titleMedium),
                   const Spacer(),
-                  GFButton(
-                    size: GFSize.SMALL,
-                    type: GFButtonType.outline,
+                  OutlinedButton.icon(
                     onPressed: () {
                       setState(() {
                         customSequenceControllers.add(TextEditingController());
@@ -141,7 +141,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                       });
                     },
                     icon: const Icon(Icons.add, size: 16),
-                    text: 'Add',
+                    label: const Text('Add'),
                   ),
                 ],
               ),

@@ -3,7 +3,6 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
-import 'package:getwidget/getwidget.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
@@ -199,13 +198,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     },
                     child: SizedBox(
                       width: 260,
-                      child: GFCard(
+                      child: Card(
                         color: Theme.of(context).colorScheme.surface.withOpacity(0.9),
-                        content: Text(note.text),
-                        title: GFListTile(
-                          titleText: 'Canvas Note',
-                          icon: const Icon(Icons.drag_indicator),
-                          subTitleText: 'Drag me anywhere',
+                        child: ListTile(
+                          title: const Text('Canvas Note'),
+                          subtitle: Text(note.text),
+                          leading: const Icon(Icons.drag_indicator),
                         ),
                       ),
                     ),
@@ -297,7 +295,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 10),
               Wrap(
                 spacing: 8,
-                children: nextLetters.map((n) => GFBadge(text: n.toUpperCase(), color: Theme.of(context).colorScheme.primary)).toList(),
+                children: nextLetters
+                    .map((n) => Chip(
+                          label: Text(n.toUpperCase()),
+                          backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.25),
+                        ))
+                    .toList(),
               ),
               const SizedBox(height: 10),
               SizedBox(
