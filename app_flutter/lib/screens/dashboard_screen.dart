@@ -50,6 +50,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   String _mnemonicSequence = '';
   Timer? _mnemonicTimer;
   bool _mnemonicFailed = false;
+  bool _globalKeyHandlerRegistered = false;
 
   @override
   void initState() {
@@ -58,6 +59,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       context.read<AppState>().bootstrap();
       _scrollToActiveScreen();
       _keyboardFocus.requestFocus();
+      if (!_globalKeyHandlerRegistered) {
+        HardwareKeyboard.instance.addHandler(_globalKeyHandler);
+        _globalKeyHandlerRegistered = true;
+      }
     });
   }
 
@@ -68,6 +73,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _horizontalController.dispose();
     _verticalController.dispose();
     _keyboardFocus.dispose();
+    if (_globalKeyHandlerRegistered) {
+      HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
+      _globalKeyHandlerRegistered = false;
+    }
     super.dispose();
   }
 
@@ -89,6 +98,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           ),
+          const SizedBox(width: 8),
         ],
       ),
       floatingActionButton: FloatingActionButton(
@@ -96,6 +106,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         tooltip: 'Settings (s o)',
         child: const Icon(Icons.settings),
       ),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endTop,
       body: Focus(
         autofocus: true,
         focusNode: _keyboardFocus,
@@ -109,6 +120,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
     );
+  }
+
+  bool _globalKeyHandler(KeyEvent event) {
+    if (!mounted) {
+      return false;
+    }
+    final state = context.read<AppState>();
+    return _onKeyEvent(state, event) == KeyEventResult.handled;
   }
 
   KeyEventResult _onKeyEvent(AppState state, KeyEvent event) {
@@ -665,6 +684,18 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final characters = (project?['characters'] as List?) ?? [];
     return ListView(
       children: [
+        Container(
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(
+            color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.35),
+            borderRadius: BorderRadius.circular(12),
+            border: Border.all(color: Theme.of(context).colorScheme.primary),
+          ),
+          child: const Text(
+            'INFINITE CANVAS MODE ACTIVE — Trigger mnemonics with Super+Space (or Space when no input is focused).',
+          ),
+        ),
+        const SizedBox(height: 12),
         Wrap(
           spacing: 10,
           runSpacing: 10,

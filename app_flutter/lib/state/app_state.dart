@@ -3,12 +3,14 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../services/backend_client.dart';
+import '../services/backend_runtime_service.dart';
 import '../services/local_storage_service.dart';
 
 class AppState extends ChangeNotifier {
   AppState();
 
   final BackendClient api = BackendClient();
+  final BackendRuntimeService backendRuntime = const BackendRuntimeService();
   final LocalStorageService localStorage = LocalStorageService();
 
   static const Map<String, String> defaultShortcutBindings = {
@@ -52,6 +54,7 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       await localStorage.ensureAppDirectories();
+      await backendRuntime.ensureBackendRunning();
       await api.health();
       backendOnline = true;
       projects = await api.listProjects();
@@ -66,7 +69,7 @@ class AppState extends ChangeNotifier {
       }
     } catch (e) {
       backendOnline = false;
-      error = 'Backend not reachable at http://127.0.0.1:8787. Start backend and click Refresh.';
+      error = 'Backend startup failed at http://127.0.0.1:8787. Check local backend logs and click Refresh.';
     } finally {
       loading = false;
       notifyListeners();

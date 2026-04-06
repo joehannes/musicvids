@@ -3,6 +3,7 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/app_flutter"
+BACKEND_DIR="$ROOT_DIR/backend_python"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
 VERSION="${1:-0.2.0}"
@@ -23,13 +24,21 @@ fi
 rm -rf "$PKG_ROOT"
 mkdir -p "$PKG_ROOT/DEBIAN"
 mkdir -p "$PKG_ROOT/opt/$PKG_NAME"
+mkdir -p "$PKG_ROOT/opt/$PKG_NAME/backend"
 mkdir -p "$PKG_ROOT/usr/bin"
 mkdir -p "$PKG_ROOT/usr/share/applications"
 
 cp -r "$BUILD_BUNDLE"/* "$PKG_ROOT/opt/$PKG_NAME/"
+cp -r "$BACKEND_DIR"/* "$PKG_ROOT/opt/$PKG_NAME/backend/"
 
 cat > "$PKG_ROOT/usr/bin/musicvids-studio" <<'LAUNCHER'
 #!/usr/bin/env bash
+set -euo pipefail
+
+if [ -x /opt/musicvids-studio/backend/start_backend.sh ]; then
+  /opt/musicvids-studio/backend/start_backend.sh || true
+fi
+
 exec /opt/musicvids-studio/musicvids_studio "$@"
 LAUNCHER
 chmod +x "$PKG_ROOT/usr/bin/musicvids-studio"
@@ -51,7 +60,7 @@ Section: video
 Priority: optional
 Architecture: $ARCH
 Maintainer: MusicVid Studio Team
-Depends: libgtk-3-0, libstdc++6
+Depends: libgtk-3-0, libstdc++6, python3, python3-venv
 Description: Local-first AI music video generation studio
 EOF2
 
