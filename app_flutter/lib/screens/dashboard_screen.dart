@@ -3,6 +3,7 @@ import 'dart:convert';
 
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:getwidget/getwidget.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
@@ -23,10 +24,17 @@ class _CanvasScreen {
   final Offset offset;
 }
 
+class _CanvasNote {
+  _CanvasNote({required this.position, required this.text});
+  Offset position;
+  String text;
+}
+
 class _DashboardScreenState extends State<DashboardScreen> {
   final TextEditingController _newProjectController = TextEditingController();
   final FocusNode _keyboardFocus = FocusNode();
   final Map<String, Offset> _screenPanOffsets = {};
+  final Map<String, List<_CanvasNote>> _screenNotes = {};
 
   final List<_CanvasScreen> _screens = const [
     _CanvasScreen(id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard, offset: Offset.zero),
@@ -159,6 +167,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildCanvas(AppState state) {
     final viewport = MediaQuery.sizeOf(context);
     final pan = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
+    final notes = _screenNotes[_activeScreenId] ?? <_CanvasNote>[];
     return GestureDetector(
       onPanUpdate: (details) {
         setState(() {
@@ -174,21 +183,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Transform.translate(
               offset: pan,
               child: SizedBox(
-                width: 9000,
-                height: 9000,
-                child: Stack(
-                  children: [
-                    Positioned(
-                      left: 4500 - viewport.width / 2,
-                      top: 4500 - viewport.height / 2,
-                      width: viewport.width,
-                      height: viewport.height,
-                      child: _pageForScreen(_activeScreenId, state),
-                    ),
-                  ],
-                ),
+                width: viewport.width,
+                height: viewport.height,
+                child: _pageForScreen(_activeScreenId, state),
               ),
             ),
+            ...notes.map((note) => Positioned(
+                  left: viewport.width / 2 + note.position.dx + pan.dx,
+                  top: viewport.height / 2 + note.position.dy + pan.dy,
+                  child: GestureDetector(
+                    onPanUpdate: (details) {
+                      setState(() {
+                        note.position += details.delta;
+                      });
+                    },
+                    child: SizedBox(
+                      width: 260,
+                      child: GFCard(
+                        color: Theme.of(context).colorScheme.surface.withOpacity(0.9),
+                        content: Text(note.text),
+                        title: GFListTile(
+                          titleText: 'Canvas Note',
+                          icon: const Icon(Icons.drag_indicator),
+                          subTitleText: 'Drag me anywhere',
+                        ),
+                      ),
+                    ),
+                  ),
+                )),
           ],
         ),
       ),
@@ -275,7 +297,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 10),
               Wrap(
                 spacing: 8,
-                children: nextLetters.map((n) => Chip(label: Text(n.toUpperCase()))).toList(),
+                children: nextLetters.map((n) => GFBadge(text: n.toUpperCase(), color: Theme.of(context).colorScheme.primary)).toList(),
               ),
               const SizedBox(height: 10),
               SizedBox(
@@ -422,6 +444,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       case 'navigate.down':
         _panWithinScreen(0, -1);
         break;
+      case 'canvas.note.new':
+        _addCanvasNote();
+        break;
+      case 'canvas.center':
+        _resetCanvasPan();
+        break;
       case 'navigate.dashboard':
         _setActiveScreen('dashboard');
         break;
@@ -453,10 +481,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         await _showQuickCreateProjectDialog(state);
         break;
       case 'project.open':
-        if (state.projects.isNotEmpty) {
-          await state.loadProject(state.projects.first);
+        if (state.projects.isEmpty) {
+          _showSnack('No projects available yet.');
+          break;
         }
-        _showSnack('Opened first project in list.');
+        await state.loadProject(state.projects.first);
+        if (state.activeProject == null) {
+          _showSnack('Project load failed. Check backend status.');
+        } else {
+          _showSnack('Opened first project in list.');
+        }
         break;
       case 'project.save':
         await state.saveActiveProject();
@@ -474,7 +508,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _showSnack('Channel synchronization placeholder triggered.');
         break;
       case 'lyrics.new':
-        _addLyricSection(state);
+        await _addLyricSection(state);
         break;
       case 'lyrics.delete':
         _deleteLastLyricSection(state);
@@ -547,6 +581,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  void _resetCanvasPan() {
+    setState(() {
+      _screenPanOffsets[_activeScreenId] = Offset.zero;
+    });
+  }
+
+  void _addCanvasNote() {
+    final notes = _screenNotes.putIfAbsent(_activeScreenId, () => <_CanvasNote>[]);
+    setState(() {
+      notes.add(_CanvasNote(position: const Offset(0, 0), text: 'New component placeholder'));
+    });
+  }
+
   bool _isTextFieldFocused() {
     final focused = FocusManager.instance.primaryFocus;
     final context = focused?.context;
@@ -605,8 +652,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _showSnack('Channel added.');
   }
 
-  void _addLyricSection(AppState state) {
-    final project = state.activeProject;
+  Future<void> _addLyricSection(AppState state) async {
+    var project = state.activeProject;
+    if (project == null && state.projects.isNotEmpty) {
+      await state.loadProject(state.projects.first);
+      project = state.activeProject;
+    }
     if (project == null) {
       _showSnack('Load a project first.');
       return;

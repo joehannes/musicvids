@@ -1,4 +1,7 @@
 import 'package:flutter/material.dart';
+import 'package:getwidget/getwidget.dart';
+
+import '../state/app_state.dart';
 
 import '../state/app_state.dart';
 
@@ -130,15 +133,17 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 children: [
                   Text('Custom shortcuts', style: Theme.of(context).textTheme.titleMedium),
                   const Spacer(),
-                  OutlinedButton.icon(
+                  GFButton(
+                    size: GFSize.SMALL,
+                    type: GFButtonType.outline,
                     onPressed: () {
                       setState(() {
                         customSequenceControllers.add(TextEditingController());
                         customLabelControllers.add(TextEditingController());
                       });
                     },
-                    icon: const Icon(Icons.add),
-                    label: const Text('Add'),
+                    icon: const Icon(Icons.add, size: 16),
+                    text: 'Add',
                   ),
                 ],
               ),
