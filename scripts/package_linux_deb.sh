@@ -60,6 +60,31 @@ for file in candidates:
         print(f"Applied compatibility fix in {file}")
 PY
 
+python3 - <<PY
+from pathlib import Path
+file = Path("$APP_DIR/lib/widgets/settings_dialog.dart")
+if file.exists():
+    lines = file.read_text().splitlines()
+    targets = {
+        "  late final Map<String, TextEditingController> shortcutControllers;",
+        "  final List<TextEditingController> customSequenceControllers = [];",
+        "  final List<TextEditingController> customLabelControllers = [];",
+    }
+    seen = set()
+    output = []
+    changed = False
+    for line in lines:
+        if line in targets:
+            if line in seen:
+                changed = True
+                continue
+            seen.add(line)
+        output.append(line)
+    if changed:
+        file.write_text("\\n".join(output) + "\\n")
+        print(f"Removed duplicate controller declarations in {file}")
+PY
+
 (
   cd "$APP_DIR"
   flutter clean
