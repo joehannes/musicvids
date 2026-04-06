@@ -6,6 +6,7 @@ import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
+import '../widgets/list_popup.dart';
 import '../widgets/settings_dialog.dart';
 
 class DashboardScreen extends StatefulWidget {
@@ -480,6 +481,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
       case 'navigate.upload':
         _setActiveScreen('upload');
         break;
+      case 'navigate.screen_picker':
+        await _openScreenPicker();
+        break;
       case 'project.new':
         await _showQuickCreateProjectDialog(state);
         break;
@@ -577,6 +581,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
   }
 
+  Future<void> _openScreenPicker() async {
+    final selected = await showListPopup<String>(
+      context: context,
+      title: 'Select screen/view',
+      helperText: 'Navigate with j/k or ↑/↓ then Enter.',
+      selectedValue: _activeScreenId,
+      entries: _screens
+          .map(
+            (screen) => ListPopupEntry<String>(
+              value: screen.id,
+              label: screen.label,
+              leading: Icon(screen.icon),
+              subtitle: 'Open ${screen.label} view',
+            ),
+          )
+          .toList(),
+    );
+    if (selected != null) {
+      _setActiveScreen(selected);
+    }
+  }
+
   void _panWithinScreen(double dx, double dy) {
     final current = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
     setState(() {
@@ -665,13 +691,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _showSnack('Load a project first.');
       return;
     }
-    final lyrics = (project['lyrics'] as Map<String, dynamic>? ?? {});
-    final en = (lyrics['en'] as Map<String, dynamic>? ?? {'enabled': true, 'sections': <String>[], 'tone_notes': ''});
-    final sections = (en['sections'] as List?)?.cast<String>() ?? <String>[];
-    sections.add('New lyric section...');
-    en['sections'] = sections;
-    lyrics['en'] = en;
-    project['lyrics'] = lyrics;
+    final lyrics = _ensureLyricsStructure(project);
+    final languages = (lyrics['languages'] as List).cast<String>();
+    final blocks = (lyrics['blocks'] as List).cast<Map<String, dynamic>>();
+    final textByLanguage = <String, dynamic>{
+      for (final lang in languages) lang: '',
+    };
+    blocks.add({'muted': false, 'texts': textByLanguage});
     state.touch();
     _showSnack('Lyric section added.');
   }
@@ -679,16 +705,82 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _deleteLastLyricSection(AppState state) {
     final project = state.activeProject;
     if (project == null) return;
-    final lyrics = (project['lyrics'] as Map<String, dynamic>? ?? {});
-    final en = (lyrics['en'] as Map<String, dynamic>? ?? {});
-    final sections = (en['sections'] as List?)?.cast<String>() ?? <String>[];
-    if (sections.isNotEmpty) {
-      sections.removeLast();
-      en['sections'] = sections;
-      lyrics['en'] = en;
+    final lyrics = _ensureLyricsStructure(project);
+    final blocks = (lyrics['blocks'] as List).cast<Map<String, dynamic>>();
+    if (blocks.isNotEmpty) {
+      blocks.removeLast();
       state.touch();
       _showSnack('Removed last lyric section.');
     }
+  }
+
+  Map<String, dynamic> _ensureLyricsStructure(Map<String, dynamic> project) {
+    final raw = (project['lyrics'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+    final alreadyStructured = raw['languages'] is List && raw['blocks'] is List;
+    if (alreadyStructured) {
+      final languages = ((raw['languages'] as List).map((e) => e.toString()).where((e) => e.isNotEmpty).toList());
+      if (languages.isEmpty) {
+        languages.add('en');
+      }
+      raw['languages'] = languages;
+      raw['current_language'] = languages.contains(raw['current_language']) ? raw['current_language'] : languages.first;
+      raw['tone_notes'] = raw['tone_notes']?.toString() ?? '';
+      raw['blocks'] = ((raw['blocks'] as List).map((entry) {
+        final block = (entry as Map).cast<String, dynamic>();
+        final texts = (block['texts'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+        for (final language in languages) {
+          texts[language] = texts[language]?.toString() ?? '';
+        }
+        return <String, dynamic>{
+          'muted': block['muted'] == true,
+          'texts': texts,
+        };
+      }).toList());
+      project['lyrics'] = raw;
+      return raw;
+    }
+
+    final migratedLanguages = <String>[];
+    final blocks = <Map<String, dynamic>>[];
+    var toneNotes = '';
+    for (final entry in raw.entries) {
+      final language = entry.key;
+      final value = (entry.value as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+      migratedLanguages.add(language);
+      final sections = (value['sections'] as List?)?.map((section) => section.toString()).toList() ?? <String>[''];
+      for (var i = 0; i < sections.length; i++) {
+        if (i >= blocks.length) {
+          blocks.add({'muted': false, 'texts': <String, dynamic>{}});
+        }
+        final texts = (blocks[i]['texts'] as Map).cast<String, dynamic>();
+        texts[language] = sections[i];
+      }
+      if (toneNotes.isEmpty) {
+        toneNotes = value['tone_notes']?.toString() ?? '';
+      }
+    }
+    if (migratedLanguages.isEmpty) {
+      migratedLanguages.add('en');
+      blocks.add({
+        'muted': false,
+        'texts': {'en': ''},
+      });
+    }
+    for (final block in blocks) {
+      final texts = (block['texts'] as Map).cast<String, dynamic>();
+      for (final language in migratedLanguages) {
+        texts[language] = texts[language]?.toString() ?? '';
+      }
+    }
+
+    final structured = <String, dynamic>{
+      'languages': migratedLanguages,
+      'current_language': migratedLanguages.first,
+      'blocks': blocks,
+      'tone_notes': toneNotes,
+    };
+    project['lyrics'] = structured;
+    return structured;
   }
 
   void _addScene(AppState state) {
@@ -794,17 +886,144 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _lyricsPage(AppState state) {
     final project = state.activeProject;
     if (project == null) return const Center(child: Text('Load a project first.'));
-    final lyrics = (project['lyrics'] as Map<String, dynamic>? ?? {});
-    if (lyrics.isEmpty) {
-      lyrics['en'] = {'enabled': true, 'sections': [''], 'tone_notes': ''};
-    }
+    final lyrics = _ensureLyricsStructure(project);
+    final languages = (lyrics['languages'] as List).cast<String>();
+    final currentLanguage = (lyrics['current_language']?.toString().isNotEmpty ?? false)
+        ? lyrics['current_language'].toString()
+        : languages.first;
+    lyrics['current_language'] = currentLanguage;
+    final blocks = (lyrics['blocks'] as List).cast<Map<String, dynamic>>();
+    final toneNotes = lyrics['tone_notes']?.toString() ?? '';
+
     return ListView(
       children: [
-        ...lyrics.entries.map((entry) {
-          final lang = entry.key;
-          final value = entry.value as Map<String, dynamic>;
-          final sections = (value['sections'] as List?)?.cast<String>() ?? [''];
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Row(
+              children: [
+                Expanded(
+                  child: DropdownButtonFormField<String>(
+                    value: currentLanguage,
+                    decoration: const InputDecoration(
+                      labelText: 'Current language',
+                      border: OutlineInputBorder(),
+                    ),
+                    items: languages
+                        .map((lang) => DropdownMenuItem<String>(value: lang, child: Text(lang.toUpperCase())))
+                        .toList(),
+                    onChanged: (value) {
+                      if (value == null) return;
+                      lyrics['current_language'] = value;
+                      state.touch();
+                    },
+                  ),
+                ),
+                const SizedBox(width: 8),
+                FilledButton.icon(
+                  onPressed: () async {
+                    final selected = await showListPopup<String>(
+                      context: context,
+                      title: 'Manage lyric languages',
+                      selectedValue: currentLanguage,
+                      helperText: 'Select to switch language (j/k or ↑/↓).',
+                      entries: languages
+                          .map((lang) => ListPopupEntry<String>(
+                                value: lang,
+                                label: lang.toUpperCase(),
+                                subtitle: lang == currentLanguage ? 'Current language' : 'Switch to this language',
+                              ))
+                          .toList(),
+                    );
+                    if (selected != null) {
+                      lyrics['current_language'] = selected;
+                      state.touch();
+                    }
+                  },
+                  icon: const Icon(Icons.translate),
+                  label: const Text('Languages'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () async {
+                    final input = TextEditingController();
+                    final newLang = await showDialog<String>(
+                      context: context,
+                      builder: (_) => AlertDialog(
+                        title: const Text('Add language'),
+                        content: TextField(
+                          controller: input,
+                          decoration: const InputDecoration(
+                            labelText: 'Language code (e.g. en, es, fr)',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                        actions: [
+                          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+                          FilledButton(onPressed: () => Navigator.pop(context, input.text.trim().toLowerCase()), child: const Text('Add')),
+                        ],
+                      ),
+                    );
+                    if (newLang == null || newLang.isEmpty || languages.contains(newLang)) {
+                      return;
+                    }
+                    languages.add(newLang);
+                    for (final block in blocks) {
+                      final texts = (block['texts'] as Map).cast<String, dynamic>();
+                      texts[newLang] = '';
+                    }
+                    lyrics['current_language'] = newLang;
+                    state.touch();
+                  },
+                  icon: const Icon(Icons.add),
+                  label: const Text('Add'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: languages.length <= 1
+                      ? null
+                      : () {
+                          final removalTarget = currentLanguage;
+                          languages.remove(removalTarget);
+                          for (final block in blocks) {
+                            final texts = (block['texts'] as Map).cast<String, dynamic>();
+                            texts.remove(removalTarget);
+                          }
+                          lyrics['current_language'] = languages.first;
+                          state.touch();
+                        },
+                  icon: const Icon(Icons.remove),
+                  label: const Text('Remove current'),
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 8),
+        Wrap(
+          spacing: 8,
+          children: [
+            FilledButton.icon(
+              onPressed: () => _addLyricSection(state),
+              icon: const Icon(Icons.add_box_outlined),
+              label: const Text('Add lyrics block'),
+            ),
+            OutlinedButton.icon(
+              onPressed: blocks.isEmpty ? null : () => _deleteLastLyricSection(state),
+              icon: const Icon(Icons.indeterminate_check_box_outlined),
+              label: const Text('Remove last block'),
+            ),
+          ],
+        ),
+        const SizedBox(height: 8),
+        ...blocks.asMap().entries.map((entry) {
+          final index = entry.key;
+          final block = entry.value;
+          final texts = (block['texts'] as Map).cast<String, dynamic>();
+          final muted = block['muted'] == true;
           return Card(
+            elevation: 2,
+            margin: const EdgeInsets.symmetric(vertical: 6),
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
@@ -812,33 +1031,53 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 children: [
                   Row(
                     children: [
-                      Text('Language: $lang', style: Theme.of(context).textTheme.titleMedium),
+                      Text('Lyrics block ${index + 1}', style: Theme.of(context).textTheme.titleMedium),
                       const Spacer(),
-                      Switch(
-                        value: value['enabled'] == true,
-                        onChanged: (v) {
-                          value['enabled'] = v;
+                      IconButton(
+                        onPressed: () {
+                          block['muted'] = !muted;
                           state.touch();
                         },
+                        tooltip: muted ? 'Unmute block' : 'Mute block',
+                        icon: Icon(muted ? Icons.volume_off : Icons.volume_up),
                       ),
                     ],
                   ),
-                  ...sections.asMap().entries.map((s) => TextFormField(
-                        initialValue: s.value,
-                        maxLines: 2,
-                        decoration: InputDecoration(labelText: 'Section ${s.key + 1}'),
-                        onChanged: (v) => sections[s.key] = v,
-                      )),
                   TextFormField(
-                    initialValue: value['tone_notes']?.toString() ?? '',
-                    decoration: const InputDecoration(labelText: 'Tone/style notes'),
-                    onChanged: (v) => value['tone_notes'] = v,
+                    key: ValueKey('lyrics-$index-$currentLanguage'),
+                    initialValue: texts[currentLanguage]?.toString() ?? '',
+                    maxLines: null,
+                    minLines: 2,
+                    decoration: InputDecoration(
+                      labelText: '${currentLanguage.toUpperCase()} lyrics',
+                      border: const OutlineInputBorder(),
+                      filled: muted,
+                    ),
+                    onChanged: (value) {
+                      texts[currentLanguage] = value;
+                    },
                   ),
                 ],
               ),
             ),
           );
         }),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: TextFormField(
+              initialValue: toneNotes,
+              minLines: 5,
+              maxLines: 5,
+              decoration: const InputDecoration(
+                labelText: 'Tone/style notes',
+                border: OutlineInputBorder(),
+              ),
+              onChanged: (value) => lyrics['tone_notes'] = value,
+            ),
+          ),
+        ),
       ],
     );
   }
