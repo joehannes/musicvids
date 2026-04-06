@@ -183,44 +183,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Transform.translate(
               offset: pan,
               child: SizedBox(
-                width: 9000,
-                height: 9000,
-                child: Stack(
-                  children: [
-                    Positioned(
-                      left: 4500 - viewport.width / 2,
-                      top: 4500 - viewport.height / 2,
-                      width: viewport.width,
-                      height: viewport.height,
-                      child: _pageForScreen(_activeScreenId, state),
-                    ),
-                    ...notes.map((note) => Positioned(
-                          left: 4500 + note.position.dx,
-                          top: 4500 + note.position.dy,
-                          child: GestureDetector(
-                            onPanUpdate: (details) {
-                              setState(() {
-                                note.position += details.delta;
-                              });
-                            },
-                            child: SizedBox(
-                              width: 260,
-                              child: GFCard(
-                                color: Theme.of(context).colorScheme.surface.withOpacity(0.9),
-                                content: Text(note.text),
-                                title: GFListTile(
-                                  titleText: 'Canvas Note',
-                                  icon: const Icon(Icons.drag_indicator),
-                                  subTitleText: 'Drag me anywhere',
-                                ),
-                              ),
-                            ),
-                          ),
-                        )),
-                  ],
-                ),
+                width: viewport.width,
+                height: viewport.height,
+                child: _pageForScreen(_activeScreenId, state),
               ),
             ),
+            ...notes.map((note) => Positioned(
+                  left: viewport.width / 2 + note.position.dx + pan.dx,
+                  top: viewport.height / 2 + note.position.dy + pan.dy,
+                  child: GestureDetector(
+                    onPanUpdate: (details) {
+                      setState(() {
+                        note.position += details.delta;
+                      });
+                    },
+                    child: SizedBox(
+                      width: 260,
+                      child: GFCard(
+                        color: Theme.of(context).colorScheme.surface.withOpacity(0.9),
+                        content: Text(note.text),
+                        title: GFListTile(
+                          titleText: 'Canvas Note',
+                          icon: const Icon(Icons.drag_indicator),
+                          subTitleText: 'Drag me anywhere',
+                        ),
+                      ),
+                    ),
+                  ),
+                )),
           ],
         ),
       ),
@@ -491,10 +481,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
         await _showQuickCreateProjectDialog(state);
         break;
       case 'project.open':
-        if (state.projects.isNotEmpty) {
-          await state.loadProject(state.projects.first);
+        if (state.projects.isEmpty) {
+          _showSnack('No projects available yet.');
+          break;
         }
-        _showSnack('Opened first project in list.');
+        await state.loadProject(state.projects.first);
+        if (state.activeProject == null) {
+          _showSnack('Project load failed. Check backend status.');
+        } else {
+          _showSnack('Opened first project in list.');
+        }
         break;
       case 'project.save':
         await state.saveActiveProject();
@@ -512,7 +508,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _showSnack('Channel synchronization placeholder triggered.');
         break;
       case 'lyrics.new':
-        _addLyricSection(state);
+        await _addLyricSection(state);
         break;
       case 'lyrics.delete':
         _deleteLastLyricSection(state);
@@ -656,8 +652,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _showSnack('Channel added.');
   }
 
-  void _addLyricSection(AppState state) {
-    final project = state.activeProject;
+  Future<void> _addLyricSection(AppState state) async {
+    var project = state.activeProject;
+    if (project == null && state.projects.isNotEmpty) {
+      await state.loadProject(state.projects.first);
+      project = state.activeProject;
+    }
     if (project == null) {
       _showSnack('Load a project first.');
       return;
