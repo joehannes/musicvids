@@ -77,9 +77,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final state = context.watch<AppState>();
     return Scaffold(
       appBar: null,
-      floatingActionButton: FloatingActionButton(
+      floatingActionButton: FloatingActionButton.small(
         onPressed: () => _openSettings(state),
         tooltip: 'Settings (s o)',
+        shape: const CircleBorder(),
         child: const Icon(Icons.settings),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endTop,
@@ -87,12 +88,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         child: Focus(
           autofocus: true,
           focusNode: _keyboardFocus,
-          onKeyEvent: (node, event) => _onKeyEvent(state, event),
           child: Stack(
             children: [
               _buildCanvas(state),
               if (_mnemonicMode) _buildMnemonicGuide(state),
-              if (state.loading) const Positioned.fill(child: Center(child: CircularProgressIndicator())),
+              if (state.loading)
+                const Positioned(
+                  top: 8,
+                  left: 0,
+                  right: 0,
+                  child: LinearProgressIndicator(minHeight: 3),
+                ),
             ],
           ),
         ),
@@ -137,6 +143,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (RegExp(r'^[a-z]$').hasMatch(keyLabel)) {
         _mnemonicSequence = _mnemonicSequence.isEmpty ? keyLabel : '$_mnemonicSequence $keyLabel';
         _mnemonicFailed = false;
+        if (_matchesKnownShortcut(_mnemonicSequence, state)) {
+          unawaited(_resolveMnemonicSequence(state));
+          return KeyEventResult.handled;
+        }
         _restartMnemonicTimer(state);
         setState(() {});
         return KeyEventResult.handled;
@@ -186,34 +196,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildMnemonicGuide(AppState state) {
-    final shortcuts = state.shortcutBindings;
-    final available = <String, String>{};
+    final available = <Map<String, String>>[];
     final nextLetters = <String>{};
 
-    for (final entry in shortcuts.entries) {
+    for (final entry in state.shortcutBindings.entries) {
       final sequence = entry.value.trim();
       if (sequence.isEmpty) continue;
       final tokens = sequence.split(RegExp(r'\s+'));
+      final meta = state.shortcutMeta[entry.key] ?? {'category': 'Action', 'label': entry.key, 'description': ''};
+
+      if (_mnemonicSequence.isEmpty || sequence.startsWith(_mnemonicSequence)) {
+        available.add({
+          'title': '${meta['category']} → ${meta['label']}',
+          'description': meta['description'] ?? 'Available shortcut action',
+          'sequence': sequence,
+        });
+      }
+
       if (_mnemonicSequence.isEmpty) {
         nextLetters.add(tokens.first);
       } else if (sequence.startsWith(_mnemonicSequence)) {
-        final meta = state.shortcutMeta[entry.key];
-        final label = meta == null ? entry.key : '${meta['category']} → ${meta['label']}';
-        available[label] = sequence;
         final currentTokens = _mnemonicSequence.split(' ');
         if (tokens.length > currentTokens.length) {
           nextLetters.add(tokens[currentTokens.length]);
         }
       }
     }
+
     for (final custom in state.customShortcuts) {
       final sequence = (custom['sequence'] ?? '').trim();
       if (sequence.isEmpty) continue;
       final tokens = sequence.split(RegExp(r'\s+'));
+
+      if (_mnemonicSequence.isEmpty || sequence.startsWith(_mnemonicSequence)) {
+        available.add({
+          'title': 'Custom → ${custom['label'] ?? 'Action'}',
+          'description': 'User defined shortcut',
+          'sequence': sequence,
+        });
+      }
+
       if (_mnemonicSequence.isEmpty) {
         nextLetters.add(tokens.first);
       } else if (sequence.startsWith(_mnemonicSequence)) {
-        available['Custom → ${custom['label'] ?? 'Action'}'] = sequence;
         final currentTokens = _mnemonicSequence.split(' ');
         if (tokens.length > currentTokens.length) {
           nextLetters.add(tokens[currentTokens.length]);
@@ -221,14 +246,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
     }
 
-    return Positioned(
-      top: 16,
-      right: 24,
+    available.sort((a, b) => (a['title'] ?? '').compareTo(b['title'] ?? ''));
+    final capped = available.take(24).toList();
+
+    return Align(
+      alignment: Alignment.center,
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 180),
         opacity: 1,
         child: Container(
-          width: 680,
+          width: 860,
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
@@ -242,7 +269,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               Text('Mnemonic Guide', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: 6),
               Text(
-                _mnemonicSequence.isEmpty ? 'Start typing category letters…' : 'Sequence: $_mnemonicSequence',
+                _mnemonicSequence.isEmpty ? 'Type a sequence (example: S O)' : 'Sequence: $_mnemonicSequence',
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 10),
@@ -252,14 +279,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 10),
               SizedBox(
-                height: 340,
+                height: 360,
                 child: ListView(
-                  children: available.entries
+                  children: capped
                       .map((e) => ListTile(
                             dense: true,
                             visualDensity: VisualDensity.compact,
-                            title: Text(e.key),
-                            trailing: Text(e.value.toUpperCase()),
+                            title: Text(e['title'] ?? ''),
+                            subtitle: Text(e['description'] ?? ''),
+                            trailing: Text((e['sequence'] ?? '').toUpperCase()),
                           ))
                       .toList(),
                 ),
@@ -269,6 +297,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
     );
+  }
+
+  bool _matchesKnownShortcut(String sequence, AppState state) {
+    final normalized = sequence.trim();
+    if (state.shortcutBindings.values.any((value) => value.trim() == normalized)) {
+      return true;
+    }
+    return state.customShortcuts.any((entry) => (entry['sequence'] ?? '').trim() == normalized);
   }
 
   Widget _pageForScreen(String id, AppState state) {

@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../services/backend_client.dart';
 import '../services/backend_runtime_service.dart';
 import '../services/local_storage_service.dart';
+import '../services/theme_schema_service.dart';
 
 class AppState extends ChangeNotifier {
   AppState();
@@ -46,10 +47,10 @@ class AppState extends ChangeNotifier {
   };
 
   static const Map<String, Map<String, String>> defaultShortcutMeta = {
-    'navigate.left': {'category': 'Navigation', 'label': 'Previous screen'},
-    'navigate.right': {'category': 'Navigation', 'label': 'Next screen'},
-    'navigate.up': {'category': 'Canvas', 'label': 'Pan up within current screen'},
-    'navigate.down': {'category': 'Canvas', 'label': 'Pan down within current screen'},
+    'navigate.left': {'category': 'Navigation', 'label': 'Previous screen', 'description': 'Cycle to previous fullscreen screen'},
+    'navigate.right': {'category': 'Navigation', 'label': 'Next screen', 'description': 'Cycle to next fullscreen screen'},
+    'navigate.up': {'category': 'Canvas', 'label': 'Pan up within current screen', 'description': 'Move the current screen canvas up'},
+    'navigate.down': {'category': 'Canvas', 'label': 'Pan down within current screen', 'description': 'Move the current screen canvas down'},
     'navigate.dashboard': {'category': 'Navigation', 'label': 'Jump to Dashboard'},
     'navigate.projects': {'category': 'Navigation', 'label': 'Jump to Projects'},
     'navigate.lyrics': {'category': 'Navigation', 'label': 'Jump to Lyrics'},
@@ -90,6 +91,9 @@ class AppState extends ChangeNotifier {
   final Map<String, String> shortcutBindings = {...defaultShortcutBindings};
   final Map<String, Map<String, String>> shortcutMeta = {...defaultShortcutMeta};
   List<Map<String, String>> customShortcuts = [];
+  List<Map<String, dynamic>> themes = [];
+  String activeThemeId = 'midnight_focus';
+  ThemeData activeTheme = ThemeData.dark(useMaterial3: true);
 
   Future<void> bootstrap() async {
     loading = true;
@@ -97,7 +101,9 @@ class AppState extends ChangeNotifier {
     notifyListeners();
     try {
       await localStorage.ensureAppDirectories();
-      await backendRuntime.ensureBackendRunning();
+      try {
+        await backendRuntime.ensureBackendRunning().timeout(const Duration(seconds: 15));
+      } catch (_) {}
       await api.health();
       backendOnline = true;
       projects = await api.listProjects();
@@ -106,6 +112,7 @@ class AppState extends ChangeNotifier {
       final localSettings = await localStorage.loadSettings();
       settings = _mergeSettings(backendSettings, localSettings);
       _hydrateShortcutBindings(settings);
+      await _hydrateThemes(settings);
 
       if (projects.isNotEmpty) {
         await loadProject(projects.first);
@@ -177,10 +184,28 @@ class AppState extends ChangeNotifier {
   Future<void> saveSettings(Map<String, dynamic> payload) async {
     final prepared = jsonDecode(jsonEncode(payload)) as Map<String, dynamic>;
     _hydrateShortcutBindings(prepared);
+    await _hydrateThemes(prepared);
     await api.saveSettings(prepared);
     await localStorage.saveSettings(prepared);
     settings = prepared;
     notifyListeners();
+  }
+
+  Future<void> _hydrateThemes(Map<String, dynamic> sourceSettings) async {
+    themes = await localStorage.loadThemes();
+    final ui = (sourceSettings['ui'] as Map?)?.cast<String, dynamic>() ?? {};
+    final theme = (ui['theme'] as Map?)?.cast<String, dynamic>() ?? {};
+    activeThemeId = theme['active']?.toString() ?? activeThemeId;
+    final selected = themes.firstWhere(
+      (entry) => entry['id']?.toString() == activeThemeId,
+      orElse: () => themes.isNotEmpty ? themes.first : {'id': 'midnight_focus', 'mode': 'dark', 'colors': {}},
+    );
+    activeThemeId = selected['id']?.toString() ?? activeThemeId;
+    activeTheme = ThemeSchemaService.buildTheme(selected);
+    sourceSettings['ui'] = {
+      ...ui,
+      'theme': {'active': activeThemeId},
+    };
   }
 
   Map<String, dynamic> _mergeSettings(Map<String, dynamic> backendSettings, Map<String, dynamic> localSettings) {

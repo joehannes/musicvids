@@ -17,6 +17,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController tiktokUser;
   late final TextEditingController tiktokPass;
   late final TextEditingController openaiKey;
+  late String selectedThemeId;
+
+  late final Map<String, TextEditingController> shortcutControllers;
+  final List<TextEditingController> customSequenceControllers = [];
+  final List<TextEditingController> customLabelControllers = [];
 
   late final Map<String, TextEditingController> shortcutControllers;
   final List<TextEditingController> customSequenceControllers = [];
@@ -31,6 +36,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
     tiktokUser = TextEditingController(text: widget.initial['tiktok']?['username'] ?? '');
     tiktokPass = TextEditingController(text: widget.initial['tiktok']?['password'] ?? '');
     openaiKey = TextEditingController(text: widget.initial['openai']?['api_key'] ?? '');
+    selectedThemeId = ((widget.initial['ui'] as Map?)?['theme']?['active']?.toString() ?? 'midnight_focus');
 
     final existing = ((widget.initial['ui'] as Map?)?['shortcuts'] as Map?)?.cast<String, dynamic>() ?? {};
     shortcutControllers = {
@@ -83,6 +89,26 @@ class _SettingsDialogState extends State<SettingsDialog> {
               TextField(controller: tiktokUser, decoration: const InputDecoration(labelText: 'TikTok Username')),
               TextField(controller: tiktokPass, decoration: const InputDecoration(labelText: 'TikTok Password'), obscureText: true),
               TextField(controller: openaiKey, decoration: const InputDecoration(labelText: 'OpenAI API Key (optional)')),
+              const SizedBox(height: 10),
+              DropdownButtonFormField<String>(
+                value: selectedThemeId,
+                items: const [
+                  DropdownMenuItem(value: 'midnight_focus', child: Text('Midnight Focus (Dark)')),
+                  DropdownMenuItem(value: 'aurora_light', child: Text('Aurora Light (Light)')),
+                  DropdownMenuItem(value: 'contrast_slate', child: Text('Contrast Slate (Dark)')),
+                ],
+                onChanged: (value) {
+                  if (value != null) {
+                    setState(() {
+                      selectedThemeId = value;
+                    });
+                  }
+                },
+                decoration: const InputDecoration(
+                  labelText: 'Theme',
+                  border: OutlineInputBorder(),
+                ),
+              ),
               const SizedBox(height: 16),
               Text('Shortcut bindings', style: Theme.of(context).textTheme.titleMedium),
               const SizedBox(height: 6),
@@ -175,6 +201,7 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     'label': customLabelControllers[index].text.trim(),
                   };
                 }).where((entry) => (entry['sequence'] ?? '').isNotEmpty && (entry['label'] ?? '').isNotEmpty).toList(),
+                'theme': {'active': selectedThemeId},
               },
             });
           },
