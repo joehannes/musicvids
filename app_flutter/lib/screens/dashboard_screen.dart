@@ -1,6 +1,8 @@
+import 'dart:async';
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:provider/provider.dart';
 
 import '../state/app_state.dart';
@@ -13,88 +15,267 @@ class DashboardScreen extends StatefulWidget {
   State<DashboardScreen> createState() => _DashboardScreenState();
 }
 
+class _CanvasScreen {
+  const _CanvasScreen({required this.id, required this.label, required this.icon, required this.offset});
+  final String id;
+  final String label;
+  final IconData icon;
+  final Offset offset;
+}
+
 class _DashboardScreenState extends State<DashboardScreen> {
   final TextEditingController _newProjectController = TextEditingController();
+  final FocusNode _keyboardFocus = FocusNode();
+  final Map<String, Offset> _screenPanOffsets = {};
+
+  final List<_CanvasScreen> _screens = const [
+    _CanvasScreen(id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard, offset: Offset.zero),
+    _CanvasScreen(id: 'projects', label: 'Projects', icon: Icons.folder, offset: Offset.zero),
+    _CanvasScreen(id: 'lyrics', label: 'Lyrics', icon: Icons.library_music, offset: Offset.zero),
+    _CanvasScreen(id: 'channels', label: 'Channels', icon: Icons.people, offset: Offset.zero),
+    _CanvasScreen(id: 'storyboard', label: 'Storyboard', icon: Icons.view_timeline, offset: Offset.zero),
+    _CanvasScreen(id: 'characters', label: 'Characters', icon: Icons.person, offset: Offset.zero),
+    _CanvasScreen(id: 'generation', label: 'Generation', icon: Icons.movie, offset: Offset.zero),
+    _CanvasScreen(id: 'preview', label: 'Preview', icon: Icons.preview, offset: Offset.zero),
+    _CanvasScreen(id: 'upload', label: 'Upload', icon: Icons.upload, offset: Offset.zero),
+  ];
+
+  String _activeScreenId = 'dashboard';
+  bool _mnemonicMode = false;
+  String _mnemonicSequence = '';
+  Timer? _mnemonicTimer;
+  bool _mnemonicFailed = false;
+  bool _globalKeyHandlerRegistered = false;
 
   @override
   void initState() {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().bootstrap();
+      _keyboardFocus.requestFocus();
+      if (!_globalKeyHandlerRegistered) {
+        HardwareKeyboard.instance.addHandler(_globalKeyHandler);
+        _globalKeyHandlerRegistered = true;
+      }
     });
+  }
+
+  @override
+  void dispose() {
+    _mnemonicTimer?.cancel();
+    _newProjectController.dispose();
+    _keyboardFocus.dispose();
+    if (_globalKeyHandlerRegistered) {
+      HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
+      _globalKeyHandlerRegistered = false;
+    }
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('MusicVid Studio'),
-        actions: [
-          IconButton(
-            tooltip: 'Refresh',
-            onPressed: () => state.bootstrap(),
-            icon: const Icon(Icons.refresh),
-          ),
-          IconButton(
-            tooltip: 'Save project',
-            onPressed: state.activeProject == null ? null : state.saveActiveProject,
-            icon: const Icon(Icons.save),
-          ),
-          IconButton(
-            tooltip: 'Settings',
-            icon: const Icon(Icons.settings),
-            onPressed: () async {
-              final updated = await showDialog<Map<String, dynamic>>(
-                context: context,
-                builder: (_) => SettingsDialog(initial: state.settings),
-              );
-              if (updated != null) {
-                await state.saveSettings(updated);
-              }
-            },
-          ),
-        ],
+      appBar: null,
+      floatingActionButton: FloatingActionButton(
+        onPressed: () => _openSettings(state),
+        tooltip: 'Settings (s o)',
+        child: const Icon(Icons.settings),
       ),
-      body: Row(
-        children: [
-          NavigationRail(
-            selectedIndex: state.selectedNavIndex,
-            onDestinationSelected: state.setNav,
-            labelType: NavigationRailLabelType.all,
-            destinations: const [
-              NavigationRailDestination(icon: Icon(Icons.dashboard), label: Text('Dashboard')),
-              NavigationRailDestination(icon: Icon(Icons.folder), label: Text('Projects')),
-              NavigationRailDestination(icon: Icon(Icons.library_music), label: Text('Lyrics')),
-              NavigationRailDestination(icon: Icon(Icons.people), label: Text('Channels')),
-              NavigationRailDestination(icon: Icon(Icons.view_timeline), label: Text('Storyboard')),
-              NavigationRailDestination(icon: Icon(Icons.person), label: Text('Characters')),
-              NavigationRailDestination(icon: Icon(Icons.movie), label: Text('Generation')),
-              NavigationRailDestination(icon: Icon(Icons.preview), label: Text('Video Preview')),
-              NavigationRailDestination(icon: Icon(Icons.upload), label: Text('Upload')),
+      floatingActionButtonLocation: FloatingActionButtonLocation.endTop,
+      body: SafeArea(
+        child: Focus(
+          autofocus: true,
+          focusNode: _keyboardFocus,
+          onKeyEvent: (node, event) => _onKeyEvent(state, event),
+          child: Stack(
+            children: [
+              _buildCanvas(state),
+              if (_mnemonicMode) _buildMnemonicGuide(state),
+              if (state.loading) const Positioned.fill(child: Center(child: CircularProgressIndicator())),
             ],
           ),
-          const VerticalDivider(width: 1),
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.all(16),
-              child: state.loading
-                  ? const Center(child: CircularProgressIndicator())
-                  : _buildPage(state),
-            ),
-          ),
-        ],
+        ),
       ),
     );
   }
 
-  Widget _buildPage(AppState state) {
+  bool _globalKeyHandler(KeyEvent event) {
+    if (!mounted) {
+      return false;
+    }
+    final state = context.read<AppState>();
+    return _onKeyEvent(state, event) == KeyEventResult.handled;
+  }
+
+  KeyEventResult _onKeyEvent(AppState state, KeyEvent event) {
+    if (event is! KeyDownEvent) {
+      return KeyEventResult.ignored;
+    }
+
+    final key = event.logicalKey;
+    final keyLabel = key.keyLabel.toLowerCase();
+    final textFieldFocused = _isTextFieldFocused();
+
+    if (!_mnemonicMode && key == LogicalKeyboardKey.space) {
+      if (HardwareKeyboard.instance.isMetaPressed || !textFieldFocused) {
+        _startMnemonicMode();
+        return KeyEventResult.handled;
+      }
+    }
+
+    if (!_mnemonicMode && !textFieldFocused && ['h', 'j', 'k', 'l'].contains(keyLabel)) {
+      _scrollByDirection(keyLabel);
+      return KeyEventResult.handled;
+    }
+
+    if (_mnemonicMode) {
+      if (key == LogicalKeyboardKey.escape) {
+        _cancelMnemonic();
+        return KeyEventResult.handled;
+      }
+      if (RegExp(r'^[a-z]$').hasMatch(keyLabel)) {
+        _mnemonicSequence = _mnemonicSequence.isEmpty ? keyLabel : '$_mnemonicSequence $keyLabel';
+        _mnemonicFailed = false;
+        _restartMnemonicTimer(state);
+        setState(() {});
+        return KeyEventResult.handled;
+      }
+    }
+
+    return KeyEventResult.ignored;
+  }
+
+  Widget _buildCanvas(AppState state) {
+    final viewport = MediaQuery.sizeOf(context);
+    final pan = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
+    return GestureDetector(
+      onPanUpdate: (details) {
+        setState(() {
+          _screenPanOffsets[_activeScreenId] = pan + details.delta;
+        });
+      },
+      child: ClipRect(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ColoredBox(color: Theme.of(context).scaffoldBackgroundColor),
+            ),
+            Transform.translate(
+              offset: pan,
+              child: SizedBox(
+                width: 9000,
+                height: 9000,
+                child: Stack(
+                  children: [
+                    Positioned(
+                      left: 4500 - viewport.width / 2,
+                      top: 4500 - viewport.height / 2,
+                      width: viewport.width,
+                      height: viewport.height,
+                      child: _pageForScreen(_activeScreenId, state),
+                    ),
+                  ],
+                ),
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildMnemonicGuide(AppState state) {
+    final shortcuts = state.shortcutBindings;
+    final available = <String, String>{};
+    final nextLetters = <String>{};
+
+    for (final entry in shortcuts.entries) {
+      final sequence = entry.value.trim();
+      if (sequence.isEmpty) continue;
+      final tokens = sequence.split(RegExp(r'\s+'));
+      if (_mnemonicSequence.isEmpty) {
+        nextLetters.add(tokens.first);
+      } else if (sequence.startsWith(_mnemonicSequence)) {
+        final meta = state.shortcutMeta[entry.key];
+        final label = meta == null ? entry.key : '${meta['category']} → ${meta['label']}';
+        available[label] = sequence;
+        final currentTokens = _mnemonicSequence.split(' ');
+        if (tokens.length > currentTokens.length) {
+          nextLetters.add(tokens[currentTokens.length]);
+        }
+      }
+    }
+    for (final custom in state.customShortcuts) {
+      final sequence = (custom['sequence'] ?? '').trim();
+      if (sequence.isEmpty) continue;
+      final tokens = sequence.split(RegExp(r'\s+'));
+      if (_mnemonicSequence.isEmpty) {
+        nextLetters.add(tokens.first);
+      } else if (sequence.startsWith(_mnemonicSequence)) {
+        available['Custom → ${custom['label'] ?? 'Action'}'] = sequence;
+        final currentTokens = _mnemonicSequence.split(' ');
+        if (tokens.length > currentTokens.length) {
+          nextLetters.add(tokens[currentTokens.length]);
+        }
+      }
+    }
+
+    return Positioned(
+      top: 16,
+      right: 24,
+      child: AnimatedOpacity(
+        duration: const Duration(milliseconds: 180),
+        opacity: 1,
+        child: Container(
+          width: 680,
+          padding: const EdgeInsets.all(16),
+          decoration: BoxDecoration(
+            borderRadius: BorderRadius.circular(16),
+            color: _mnemonicFailed ? Colors.red.withOpacity(0.6) : Colors.black.withOpacity(0.6),
+            border: Border.all(color: Colors.white24),
+          ),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              Text('Mnemonic Guide', style: Theme.of(context).textTheme.titleLarge),
+              const SizedBox(height: 6),
+              Text(
+                _mnemonicSequence.isEmpty ? 'Start typing category letters…' : 'Sequence: $_mnemonicSequence',
+                style: Theme.of(context).textTheme.bodyMedium,
+              ),
+              const SizedBox(height: 10),
+              Wrap(
+                spacing: 8,
+                children: nextLetters.map((n) => Chip(label: Text(n.toUpperCase()))).toList(),
+              ),
+              const SizedBox(height: 10),
+              SizedBox(
+                height: 340,
+                child: ListView(
+                  children: available.entries
+                      .map((e) => ListTile(
+                            dense: true,
+                            visualDensity: VisualDensity.compact,
+                            title: Text(e.key),
+                            trailing: Text(e.value.toUpperCase()),
+                          ))
+                      .toList(),
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _pageForScreen(String id, AppState state) {
     if (state.error != null) {
       return Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('Status', style: Theme.of(context).textTheme.titleLarge),
-          const SizedBox(height: 12),
           Card(
             color: Colors.red.withOpacity(0.2),
             child: Padding(
@@ -102,38 +283,348 @@ class _DashboardScreenState extends State<DashboardScreen> {
               child: Text(state.error!),
             ),
           ),
-          const SizedBox(height: 12),
+          const SizedBox(height: 8),
           FilledButton.icon(
-            onPressed: () => state.bootstrap(),
-            icon: const Icon(Icons.play_arrow),
-            label: const Text('Retry connection'),
+            onPressed: state.bootstrap,
+            icon: const Icon(Icons.refresh),
+            label: const Text('Retry backend connection'),
           ),
         ],
       );
     }
 
-    switch (state.selectedNavIndex) {
-      case 0:
+    switch (id) {
+      case 'dashboard':
         return _dashboardPage(state);
-      case 1:
+      case 'projects':
         return _projectsPage(state);
-      case 2:
+      case 'lyrics':
         return _lyricsPage(state);
-      case 3:
+      case 'channels':
         return _channelsPage(state);
-      case 4:
+      case 'storyboard':
         return _storyboardPage(state);
-      case 5:
+      case 'characters':
         return _charactersPage(state);
-      case 6:
+      case 'generation':
         return _generationPage(state);
-      case 7:
+      case 'preview':
         return _previewPage(state);
-      case 8:
+      case 'upload':
         return _uploadPage(state);
       default:
         return const SizedBox.shrink();
     }
+  }
+
+  void _startMnemonicMode() {
+    _mnemonicTimer?.cancel();
+    setState(() {
+      _mnemonicMode = true;
+      _mnemonicSequence = '';
+      _mnemonicFailed = false;
+    });
+    _restartMnemonicTimer(context.read<AppState>());
+  }
+
+  void _restartMnemonicTimer(AppState state) {
+    _mnemonicTimer?.cancel();
+    _mnemonicTimer = Timer(const Duration(seconds: 1), () => _resolveMnemonicSequence(state));
+  }
+
+  Future<void> _resolveMnemonicSequence(AppState state) async {
+    final action = state.shortcutBindings.entries
+        .firstWhere((entry) => entry.value.trim() == _mnemonicSequence.trim(), orElse: () => const MapEntry('', ''))
+        .key;
+
+    if (action.isEmpty) {
+      final custom = state.customShortcuts.firstWhere(
+        (entry) => (entry['sequence'] ?? '').trim() == _mnemonicSequence.trim(),
+        orElse: () => {},
+      );
+      if (custom.isNotEmpty) {
+        _showSnack('Custom shortcut: ${custom['label']}');
+        _cancelMnemonic();
+        return;
+      }
+      setState(() {
+        _mnemonicFailed = true;
+      });
+      await Future<void>.delayed(const Duration(seconds: 1));
+      if (mounted) {
+        _cancelMnemonic();
+      }
+      return;
+    }
+
+    await _runAction(action, state);
+    if (mounted) {
+      _cancelMnemonic();
+    }
+  }
+
+  void _cancelMnemonic() {
+    _mnemonicTimer?.cancel();
+    setState(() {
+      _mnemonicMode = false;
+      _mnemonicSequence = '';
+      _mnemonicFailed = false;
+    });
+  }
+
+  Future<void> _runAction(String action, AppState state) async {
+    switch (action) {
+      case 'navigate.left':
+        _moveScreen(-1, 0);
+        break;
+      case 'navigate.right':
+        _moveScreen(1, 0);
+        break;
+      case 'navigate.up':
+        _panWithinScreen(0, 1);
+        break;
+      case 'navigate.down':
+        _panWithinScreen(0, -1);
+        break;
+      case 'navigate.dashboard':
+        _setActiveScreen('dashboard');
+        break;
+      case 'navigate.projects':
+        _setActiveScreen('projects');
+        break;
+      case 'navigate.lyrics':
+        _setActiveScreen('lyrics');
+        break;
+      case 'navigate.channels':
+        _setActiveScreen('channels');
+        break;
+      case 'navigate.storyboard':
+        _setActiveScreen('storyboard');
+        break;
+      case 'navigate.characters':
+        _setActiveScreen('characters');
+        break;
+      case 'navigate.generation':
+        _setActiveScreen('generation');
+        break;
+      case 'navigate.preview':
+        _setActiveScreen('preview');
+        break;
+      case 'navigate.upload':
+        _setActiveScreen('upload');
+        break;
+      case 'project.new':
+        await _showQuickCreateProjectDialog(state);
+        break;
+      case 'project.open':
+        if (state.projects.isNotEmpty) {
+          await state.loadProject(state.projects.first);
+        }
+        _showSnack('Opened first project in list.');
+        break;
+      case 'project.save':
+        await state.saveActiveProject();
+        _showSnack('Project saved.');
+        break;
+      case 'project.refresh':
+        await state.bootstrap();
+        _showSnack('Refreshed project and backend state.');
+        break;
+      case 'channel.new':
+        _addChannel(state);
+        break;
+      case 'channel.update':
+      case 'channel.sync':
+        _showSnack('Channel synchronization placeholder triggered.');
+        break;
+      case 'lyrics.new':
+        _addLyricSection(state);
+        break;
+      case 'lyrics.delete':
+        _deleteLastLyricSection(state);
+        break;
+      case 'lyrics.chapter':
+        state.nextEpisode();
+        _showSnack('Moved to next chapter/generation context.');
+        break;
+      case 'storyboard.scene.new':
+        _addScene(state);
+        break;
+      case 'character.new':
+        _addCharacter(state);
+        break;
+      case 'generation.run':
+        await state.runWorkflow();
+        break;
+      case 'generation.next':
+        state.nextEpisode();
+        break;
+      case 'generation.prev':
+        state.previousEpisode();
+        break;
+      case 'settings.open':
+        await _openSettings(state);
+        break;
+      default:
+        _showSnack('No handler for action "$action" yet.');
+    }
+  }
+
+  void _scrollByDirection(String direction) {
+    final viewport = MediaQuery.sizeOf(context);
+    final deltaX = viewport.width / 5;
+    final deltaY = viewport.height / 5;
+    if (direction == 'h') {
+      _panWithinScreen(deltaX, 0);
+    } else if (direction == 'l') {
+      _panWithinScreen(-deltaX, 0);
+    } else if (direction == 'k') {
+      _panWithinScreen(0, deltaY);
+    } else if (direction == 'j') {
+      _panWithinScreen(0, -deltaY);
+    }
+  }
+
+  void _moveScreen(int dx, int dy) {
+    if (dy != 0) {
+      return;
+    }
+    final currentIndex = _screens.indexWhere((s) => s.id == _activeScreenId);
+    if (currentIndex < 0) return;
+    final nextIndex = (currentIndex + dx) % _screens.length;
+    setState(() {
+      _activeScreenId = _screens[nextIndex < 0 ? _screens.length + nextIndex : nextIndex].id;
+    });
+  }
+
+  void _setActiveScreen(String screenId) {
+    if (_activeScreenId == screenId) return;
+    setState(() {
+      _activeScreenId = screenId;
+    });
+  }
+
+  void _panWithinScreen(double dx, double dy) {
+    final current = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
+    setState(() {
+      _screenPanOffsets[_activeScreenId] = Offset(current.dx + dx, current.dy + dy);
+    });
+  }
+
+  bool _isTextFieldFocused() {
+    final focused = FocusManager.instance.primaryFocus;
+    final context = focused?.context;
+    final widget = context?.widget;
+    return widget is EditableText;
+  }
+
+  Future<void> _openSettings(AppState state) async {
+    final updated = await showDialog<Map<String, dynamic>>(
+      context: context,
+      builder: (_) => SettingsDialog(initial: state.settings),
+    );
+    if (updated != null) {
+      await state.saveSettings(updated);
+      _showSnack('Settings and shortcut bindings saved.');
+    }
+  }
+
+  Future<void> _showQuickCreateProjectDialog(AppState state) async {
+    final name = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Create project'),
+        content: TextField(controller: _newProjectController, decoration: const InputDecoration(labelText: 'Project name')),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, _newProjectController.text), child: const Text('Create')),
+        ],
+      ),
+    );
+    if (name != null && name.trim().isNotEmpty) {
+      await state.createProject(name.trim());
+      _newProjectController.clear();
+      _showSnack('Created project $name.');
+    }
+  }
+
+  void _addChannel(AppState state) {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    channels.add({
+      'channel_id': 'channel_${channels.length + 1}',
+      'language': 'en',
+      'title': 'New Channel',
+      'description': '',
+      'vibe': 'cinematic',
+      'visual_style': 'stylized',
+      'enabled': true,
+    });
+    project['channels'] = channels;
+    state.touch();
+    _showSnack('Channel added.');
+  }
+
+  void _addLyricSection(AppState state) {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final lyrics = (project['lyrics'] as Map<String, dynamic>? ?? {});
+    final en = (lyrics['en'] as Map<String, dynamic>? ?? {'enabled': true, 'sections': <String>[], 'tone_notes': ''});
+    final sections = (en['sections'] as List?)?.cast<String>() ?? <String>[];
+    sections.add('New lyric section...');
+    en['sections'] = sections;
+    lyrics['en'] = en;
+    project['lyrics'] = lyrics;
+    state.touch();
+    _showSnack('Lyric section added.');
+  }
+
+  void _deleteLastLyricSection(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final lyrics = (project['lyrics'] as Map<String, dynamic>? ?? {});
+    final en = (lyrics['en'] as Map<String, dynamic>? ?? {});
+    final sections = (en['sections'] as List?)?.cast<String>() ?? <String>[];
+    if (sections.isNotEmpty) {
+      sections.removeLast();
+      en['sections'] = sections;
+      lyrics['en'] = en;
+      state.touch();
+      _showSnack('Removed last lyric section.');
+    }
+  }
+
+  void _addScene(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final storyboard = (project['storyboard'] as Map<String, dynamic>? ?? {'globalMood': '', 'scenes': []});
+    final scenes = (storyboard['scenes'] as List?)?.cast<Map>() ?? [];
+    scenes.add({'text': '', 'imagery': '', 'type': 'single', 'manualStart': null, 'manualEnd': null});
+    storyboard['scenes'] = scenes;
+    project['storyboard'] = storyboard;
+    state.touch();
+    _showSnack('Scene added.');
+  }
+
+  void _addCharacter(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final characters = (project['characters'] as List?)?.cast<Map>() ?? [];
+    characters.add({'name': 'New Character', 'description': '', 'variations': ['default']});
+    project['characters'] = characters;
+    state.touch();
+    _showSnack('Character added.');
+  }
+
+  void _showSnack(String message) {
+    ScaffoldMessenger.of(context).showSnackBar(SnackBar(content: Text(message)));
   }
 
   Widget _dashboardPage(AppState state) {
@@ -143,8 +634,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final characters = (project?['characters'] as List?) ?? [];
     return ListView(
       children: [
-        Text('Workflow Dashboard', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 12),
         Wrap(
           spacing: 10,
           runSpacing: 10,
@@ -154,13 +643,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _metricCard('Channels', '${channels.length}'),
             _metricCard('Scenes', '${scenes.length}'),
             _metricCard('Characters', '${characters.length}'),
+            _metricCard('Episode', '${state.selectedEpisodeIndex + 1}'),
           ],
         ),
-        const SizedBox(height: 18),
+        const SizedBox(height: 12),
         Card(
           child: ListTile(
             title: Text('Active project: ${state.selectedProject ?? 'None'}'),
-            subtitle: const Text('Use Projects tab to create/load. Use Save icon after editing any tab.'),
+            subtitle: const Text('Navigate through canvas via mnemonic mode (Space → keys) or h/j/k/l scroll'),
           ),
         ),
         if (state.lastWorkflowReport != null) ...[
@@ -177,27 +667,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('Projects', style: Theme.of(context).textTheme.headlineSmall),
+        TextField(
+          controller: _newProjectController,
+          decoration: const InputDecoration(labelText: 'New project name', border: OutlineInputBorder()),
+        ),
         const SizedBox(height: 8),
-        Row(
+        Wrap(
+          spacing: 8,
           children: [
-            Expanded(
-              child: TextField(
-                controller: _newProjectController,
-                decoration: const InputDecoration(labelText: 'New project name', border: OutlineInputBorder()),
-              ),
-            ),
-            const SizedBox(width: 8),
-            FilledButton(
-              onPressed: () async {
-                await state.createProject(_newProjectController.text);
-                _newProjectController.clear();
-              },
-              child: const Text('Create'),
-            ),
+            FilledButton(onPressed: () => state.createProject(_newProjectController.text), child: const Text('Create')),
+            OutlinedButton(onPressed: state.refreshProjects, child: const Text('Refresh')),
+            OutlinedButton(onPressed: state.selectedProject == null ? null : state.saveActiveProject, child: const Text('Save active')),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 8),
         Expanded(
           child: ListView.builder(
             itemCount: state.projects.length,
@@ -208,10 +691,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   leading: const Icon(Icons.folder_open),
                   title: Text(name),
                   subtitle: Text(name == state.selectedProject ? 'Loaded' : 'Click to load'),
-                  trailing: OutlinedButton(
-                    onPressed: () => state.loadProject(name),
-                    child: const Text('Load'),
-                  ),
+                  trailing: OutlinedButton(onPressed: () => state.loadProject(name), child: const Text('Load')),
                 ),
               );
             },
@@ -230,8 +710,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
     return ListView(
       children: [
-        Text('Lyrics', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 8),
         ...lyrics.entries.map((entry) {
           final lang = entry.key;
           final value = entry.value as Map<String, dynamic>;
@@ -283,24 +761,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
       children: [
         Row(
           children: [
-            Text('Channels', style: Theme.of(context).textTheme.headlineSmall),
             const Spacer(),
-            FilledButton.icon(
-              onPressed: () {
-                channels.add({
-                  'channel_id': 'channel_${channels.length + 1}',
-                  'language': 'en',
-                  'title': 'New Channel',
-                  'description': '',
-                  'vibe': 'cinematic',
-                  'visual_style': 'stylized',
-                  'enabled': true,
-                });
-                state.touch();
-              },
-              icon: const Icon(Icons.add),
-              label: const Text('Add channel'),
-            ),
+            FilledButton.icon(onPressed: () => _addChannel(state), icon: const Icon(Icons.add), label: const Text('Add channel')),
           ],
         ),
         const SizedBox(height: 8),
@@ -328,35 +790,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           onChanged: (v) => ch['language'] = v,
                         ),
                       ),
-                      const SizedBox(width: 8),
-                      Switch(
-                        value: ch['enabled'] == true,
-                        onChanged: (v) {
-                          ch['enabled'] = v;
-                          state.touch();
-                        },
-                      ),
                     ],
                   ),
                   TextFormField(
                     initialValue: ch['title']?.toString(),
                     decoration: const InputDecoration(labelText: 'Title'),
                     onChanged: (v) => ch['title'] = v,
-                  ),
-                  TextFormField(
-                    initialValue: ch['description']?.toString(),
-                    decoration: const InputDecoration(labelText: 'Description'),
-                    onChanged: (v) => ch['description'] = v,
-                  ),
-                  TextFormField(
-                    initialValue: ch['vibe']?.toString(),
-                    decoration: const InputDecoration(labelText: 'Music vibe'),
-                    onChanged: (v) => ch['vibe'] = v,
-                  ),
-                  TextFormField(
-                    initialValue: ch['visual_style']?.toString(),
-                    decoration: const InputDecoration(labelText: 'Visual style'),
-                    onChanged: (v) => ch['visual_style'] = v,
                   ),
                 ],
               ),
@@ -375,22 +814,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final scenes = (storyboard['scenes'] as List?)?.cast<Map>() ?? [];
     return ListView(
       children: [
-        Text('Storyboard', style: Theme.of(context).textTheme.headlineSmall),
         TextFormField(
           initialValue: storyboard['globalMood']?.toString() ?? '',
           decoration: const InputDecoration(labelText: 'Global mood'),
           onChanged: (v) => storyboard['globalMood'] = v,
         ),
         const SizedBox(height: 8),
-        FilledButton.icon(
-          onPressed: () {
-            scenes.add({'text': '', 'imagery': '', 'type': 'single', 'manualStart': null, 'manualEnd': null});
-            storyboard['scenes'] = scenes;
-            state.touch();
-          },
-          icon: const Icon(Icons.add),
-          label: const Text('Add scene'),
-        ),
+        FilledButton.icon(onPressed: () => _addScene(state), icon: const Icon(Icons.add), label: const Text('Add scene')),
         const SizedBox(height: 8),
         ...scenes.asMap().entries.map((e) {
           final i = e.key;
@@ -407,16 +837,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     decoration: const InputDecoration(labelText: 'Text'),
                     onChanged: (v) => scene['text'] = v,
                   ),
-                  TextFormField(
-                    initialValue: scene['imagery']?.toString() ?? '',
-                    decoration: const InputDecoration(labelText: 'Imagery'),
-                    onChanged: (v) => scene['imagery'] = v,
-                  ),
-                  TextFormField(
-                    initialValue: scene['type']?.toString() ?? 'single',
-                    decoration: const InputDecoration(labelText: 'Type (single|pack)'),
-                    onChanged: (v) => scene['type'] = v,
-                  ),
                 ],
               ),
             ),
@@ -432,44 +852,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final characters = (project['characters'] as List?)?.cast<Map>() ?? [];
     return ListView(
       children: [
-        Row(
-          children: [
-            Text('Characters', style: Theme.of(context).textTheme.headlineSmall),
-            const Spacer(),
-            FilledButton.icon(
-              onPressed: () {
-                characters.add({'name': 'New Character', 'description': '', 'variations': ['default']});
-                project['characters'] = characters;
-                state.touch();
-              },
-              icon: const Icon(Icons.add),
-              label: const Text('Add character'),
-            ),
-          ],
-        ),
+        FilledButton.icon(onPressed: () => _addCharacter(state), icon: const Icon(Icons.add), label: const Text('Add character')),
         ...characters.map((raw) {
           final c = raw.cast<String, dynamic>();
           return Card(
             child: Padding(
               padding: const EdgeInsets.all(12),
-              child: Column(
-                children: [
-                  TextFormField(
-                    initialValue: c['name']?.toString(),
-                    decoration: const InputDecoration(labelText: 'Name'),
-                    onChanged: (v) => c['name'] = v,
-                  ),
-                  TextFormField(
-                    initialValue: c['description']?.toString(),
-                    decoration: const InputDecoration(labelText: 'Description'),
-                    onChanged: (v) => c['description'] = v,
-                  ),
-                  TextFormField(
-                    initialValue: ((c['variations'] as List?) ?? []).join(', '),
-                    decoration: const InputDecoration(labelText: 'Variations (comma-separated)'),
-                    onChanged: (v) => c['variations'] = v.split(',').map((e) => e.trim()).where((e) => e.isNotEmpty).toList(),
-                  ),
-                ],
+              child: TextFormField(
+                initialValue: c['name']?.toString(),
+                decoration: const InputDecoration(labelText: 'Name'),
+                onChanged: (v) => c['name'] = v,
               ),
             ),
           );
@@ -481,9 +873,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _generationPage(AppState state) {
     return ListView(
       children: [
-        Text('Generation', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 8),
         Text('Active project: ${state.selectedProject ?? 'None'}'),
+        Text('Episode/Generation slot: ${state.selectedEpisodeIndex + 1}'),
         const SizedBox(height: 8),
         Wrap(
           spacing: 8,
@@ -493,15 +884,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
               icon: const Icon(Icons.play_arrow),
               label: const Text('Run Full Workflow'),
             ),
-            OutlinedButton(
-              onPressed: state.selectedProject == null ? null : state.saveActiveProject,
-              child: const Text('Save Project State'),
-            ),
+            OutlinedButton(onPressed: state.nextEpisode, child: const Text('Next episode')),
+            OutlinedButton(onPressed: state.previousEpisode, child: const Text('Previous episode')),
           ],
         ),
-        const SizedBox(height: 16),
-        const Text('Pipeline order: songs → analyze audio → prompts → images → videos → upload'),
-        const SizedBox(height: 8),
         if (state.lastWorkflowReport != null) SelectableText(const JsonEncoder.withIndent('  ').convert(state.lastWorkflowReport)),
       ],
     );
@@ -512,16 +898,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final channelCount = ((project?['channels'] as List?) ?? []).length;
     return ListView(
       children: [
-        Text('Video Preview', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 8),
-        const Text('Preview pane is project-aware and lists generated scene image/video paths once workflow runs.'),
-        const SizedBox(height: 8),
         Text('Channels configured: $channelCount'),
         const SizedBox(height: 12),
         const Card(
           child: Padding(
             padding: EdgeInsets.all(12),
-            child: Text('For low-resource desktop mode, preview uses local files from /projects/<project>/videos and /images. Full media playback wiring can be extended with video_player once renders exist.'),
+            child: Text('Preview pane lists generated scene image/video paths once workflow runs.'),
           ),
         ),
       ],
@@ -531,19 +913,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _uploadPage(AppState state) {
     return ListView(
       children: [
-        Text('Upload', style: Theme.of(context).textTheme.headlineSmall),
-        const SizedBox(height: 8),
-        const Text('Batch upload wiring placeholders are ready in backend upload service. Configure credentials in Settings.'),
-        const SizedBox(height: 12),
-        const ListTile(
+        Text('Batch upload placeholders are ready in backend upload service.'),
+        ListTile(
           leading: Icon(Icons.check_circle_outline),
           title: Text('YouTube upload pipeline'),
-          subtitle: Text('Credential fields persisted locally; batch/retry hooks ready in workflow service.'),
         ),
-        const ListTile(
+        ListTile(
           leading: Icon(Icons.check_circle_outline),
           title: Text('TikTok upload pipeline'),
-          subtitle: Text('Credential fields persisted locally; upload adapter can be expanded per API constraints.'),
         ),
       ],
     );
@@ -551,7 +928,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _metricCard(String title, String value) {
     return SizedBox(
-      width: 180,
+      width: 145,
       child: Card(
         child: Padding(
           padding: const EdgeInsets.all(12),
