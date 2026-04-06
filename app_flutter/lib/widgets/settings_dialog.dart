@@ -1,5 +1,7 @@
 import 'package:flutter/material.dart';
 
+import '../state/app_state.dart';
+
 class SettingsDialog extends StatefulWidget {
   final Map<String, dynamic> initial;
   const SettingsDialog({super.key, required this.initial});
@@ -16,6 +18,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController tiktokPass;
   late final TextEditingController openaiKey;
 
+  late final Map<String, TextEditingController> shortcutControllers;
+
   @override
   void initState() {
     super.initState();
@@ -25,23 +29,69 @@ class _SettingsDialogState extends State<SettingsDialog> {
     tiktokUser = TextEditingController(text: widget.initial['tiktok']?['username'] ?? '');
     tiktokPass = TextEditingController(text: widget.initial['tiktok']?['password'] ?? '');
     openaiKey = TextEditingController(text: widget.initial['openai']?['api_key'] ?? '');
+
+    final existing = ((widget.initial['ui'] as Map?)?['shortcuts'] as Map?)?.cast<String, dynamic>() ?? {};
+    shortcutControllers = {
+      for (final entry in AppState.defaultShortcutBindings.entries)
+        entry.key: TextEditingController(text: existing[entry.key]?.toString() ?? entry.value),
+    };
+  }
+
+  @override
+  void dispose() {
+    sunoToken.dispose();
+    midjourneyToken.dispose();
+    youtubeKey.dispose();
+    tiktokUser.dispose();
+    tiktokPass.dispose();
+    openaiKey.dispose();
+    for (final controller in shortcutControllers.values) {
+      controller.dispose();
+    }
+    super.dispose();
   }
 
   @override
   Widget build(BuildContext context) {
     return AlertDialog(
-      title: const Text('Settings'),
-      content: SingleChildScrollView(
-        child: Column(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            TextField(controller: sunoToken, decoration: const InputDecoration(labelText: 'Suno Token')),
-            TextField(controller: midjourneyToken, decoration: const InputDecoration(labelText: 'Midjourney Discord Token')),
-            TextField(controller: youtubeKey, decoration: const InputDecoration(labelText: 'YouTube API Key')),
-            TextField(controller: tiktokUser, decoration: const InputDecoration(labelText: 'TikTok Username')),
-            TextField(controller: tiktokPass, decoration: const InputDecoration(labelText: 'TikTok Password'), obscureText: true),
-            TextField(controller: openaiKey, decoration: const InputDecoration(labelText: 'OpenAI API Key (optional)')),
-          ],
+      title: const Text('Settings & Mnemonic Shortcuts'),
+      content: SizedBox(
+        width: 760,
+        child: SingleChildScrollView(
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text('Integrations', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 8),
+              TextField(controller: sunoToken, decoration: const InputDecoration(labelText: 'Suno Token')),
+              TextField(controller: midjourneyToken, decoration: const InputDecoration(labelText: 'Midjourney Discord Token')),
+              TextField(controller: youtubeKey, decoration: const InputDecoration(labelText: 'YouTube API Key')),
+              TextField(controller: tiktokUser, decoration: const InputDecoration(labelText: 'TikTok Username')),
+              TextField(controller: tiktokPass, decoration: const InputDecoration(labelText: 'TikTok Password'), obscureText: true),
+              TextField(controller: openaiKey, decoration: const InputDecoration(labelText: 'OpenAI API Key (optional)')),
+              const SizedBox(height: 16),
+              Text('Shortcut bindings', style: Theme.of(context).textTheme.titleMedium),
+              const SizedBox(height: 6),
+              Text(
+                'Use space-separated mnemonic letters (example: "p s" for Project > Save).',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 8),
+              ...shortcutControllers.entries.map((entry) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: TextField(
+                    controller: entry.value,
+                    decoration: InputDecoration(
+                      labelText: entry.key,
+                      border: const OutlineInputBorder(),
+                    ),
+                  ),
+                );
+              }),
+            ],
+          ),
         ),
       ),
       actions: [
@@ -54,6 +104,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
               'youtube': {'api_key': youtubeKey.text, 'channel_ids': []},
               'tiktok': {'username': tiktokUser.text, 'password': tiktokPass.text},
               'openai': {'api_key': openaiKey.text},
+              'ui': {
+                'shortcuts': {
+                  for (final shortcut in shortcutControllers.entries) shortcut.key: shortcut.value.text.trim(),
+                },
+              },
             });
           },
           child: const Text('Save'),
