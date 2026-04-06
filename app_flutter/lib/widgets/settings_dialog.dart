@@ -23,6 +23,10 @@ class _SettingsDialogState extends State<SettingsDialog> {
   final List<TextEditingController> customSequenceControllers = [];
   final List<TextEditingController> customLabelControllers = [];
 
+  late final Map<String, TextEditingController> shortcutControllers;
+  final List<TextEditingController> customSequenceControllers = [];
+  final List<TextEditingController> customLabelControllers = [];
+
   @override
   void initState() {
     super.initState();
