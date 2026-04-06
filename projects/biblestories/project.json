@@ -1,0 +1,11 @@
+{
+  "name": "biblestories",
+  "root_path": "../projects/biblestories",
+  "lyrics": {},
+  "channels": [],
+  "storyboard": {
+    "globalMood": "cinematic",
+    "scenes": []
+  },
+  "characters": []
+}
