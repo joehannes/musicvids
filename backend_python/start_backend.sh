@@ -18,9 +18,21 @@ fi
 
 if [ ! -d "$VENV_DIR" ]; then
   python3 -m venv "$VENV_DIR"
-  "$VENV_DIR/bin/pip" install --upgrade pip >>"$LOG_FILE" 2>&1
-  "$VENV_DIR/bin/pip" install -e "$ROOT_DIR" >>"$LOG_FILE" 2>&1
 fi
 
-nohup "$VENV_DIR/bin/python" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >>"$LOG_FILE" 2>&1 &
+if "$VENV_DIR/bin/python" -c "import setuptools.build_meta" >/dev/null 2>&1; then
+  if ! "$VENV_DIR/bin/pip" install --no-build-isolation --no-deps -e "$ROOT_DIR" >>"$LOG_FILE" 2>&1; then
+    echo "WARN: editable install failed; falling back to PYTHONPATH startup." >>"$LOG_FILE"
+  fi
+else
+  echo "WARN: setuptools.build_meta unavailable in runtime venv; skipping editable install." >>"$LOG_FILE"
+fi
+
+PYTHON_BIN="$VENV_DIR/bin/python"
+if ! "$PYTHON_BIN" -c "import uvicorn" >/dev/null 2>&1; then
+  echo "WARN: uvicorn not available in runtime venv; using system python." >>"$LOG_FILE"
+  PYTHON_BIN="python3"
+fi
+
+PYTHONPATH="$ROOT_DIR:${PYTHONPATH:-}" setsid "$PYTHON_BIN" -m uvicorn app.main:app --host 127.0.0.1 --port 8787 >>"$LOG_FILE" 2>&1 < /dev/null &
 echo $! >"$PID_FILE"
