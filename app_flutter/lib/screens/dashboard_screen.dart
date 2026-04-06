@@ -911,7 +911,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _uploadPage(AppState state) {
-    return ListView(
+    return const ListView(
       children: [
         Text('Batch upload placeholders are ready in backend upload service.'),
         ListTile(
