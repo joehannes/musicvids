@@ -3,33 +3,76 @@ set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 APP_DIR="$ROOT_DIR/app_flutter"
+BACKEND_DIR="$ROOT_DIR/backend_python"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
-VERSION="${1:-0.1.0}"
+VERSION="${1:-0.1.1}"
 ARCH="amd64"
 PKG_NAME="musicvids-studio"
+PUBSPEC_VERSION="$VERSION"
+
+if [[ "$PUBSPEC_VERSION" != *"+"* ]]; then
+  PUBSPEC_VERSION="${PUBSPEC_VERSION}+1"
+fi
+
+DEB_VERSION="${VERSION%%+*}"
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then
   echo "dpkg-deb not found. Install with: sudo apt install -y dpkg-dev"
   exit 1
 fi
 
+if ! command -v flutter >/dev/null 2>&1; then
+  echo "flutter not found in PATH. Install Flutter SDK first."
+  exit 1
+fi
+
+python3 - <<PY
+from pathlib import Path
+pubspec = Path("$APP_DIR/pubspec.yaml")
+lines = pubspec.read_text().splitlines()
+updated = []
+replaced = False
+for line in lines:
+    if line.startswith("version:"):
+        updated.append(f"version: $PUBSPEC_VERSION")
+        replaced = True
+    else:
+        updated.append(line)
+if not replaced:
+    raise SystemExit("Could not find `version:` line in pubspec.yaml")
+pubspec.write_text("\\n".join(updated) + "\\n")
+PY
+
+(
+  cd "$APP_DIR"
+  flutter pub get
+  flutter build linux --release
+)
+
 if [ ! -d "$BUILD_BUNDLE" ]; then
-  echo "Release bundle not found. Run:"
-  echo "  cd app_flutter && flutter build linux --release"
+  echo "Release bundle missing after build: $BUILD_BUNDLE"
   exit 1
 fi
 
 rm -rf "$PKG_ROOT"
 mkdir -p "$PKG_ROOT/DEBIAN"
 mkdir -p "$PKG_ROOT/opt/$PKG_NAME"
+mkdir -p "$PKG_ROOT/opt/$PKG_NAME/backend"
 mkdir -p "$PKG_ROOT/usr/bin"
 mkdir -p "$PKG_ROOT/usr/share/applications"
 
 cp -r "$BUILD_BUNDLE"/* "$PKG_ROOT/opt/$PKG_NAME/"
+cp -r "$BACKEND_DIR"/* "$PKG_ROOT/opt/$PKG_NAME/backend/"
 
 cat > "$PKG_ROOT/usr/bin/musicvids-studio" <<'LAUNCHER'
 #!/usr/bin/env bash
+set -euo pipefail
+
+if [ -x /opt/musicvids-studio/backend/start_backend.sh ]; then
+  /opt/musicvids-studio/backend/start_backend.sh || true
+fi
+
 exec /opt/musicvids-studio/musicvids_studio "$@"
 LAUNCHER
 chmod +x "$PKG_ROOT/usr/bin/musicvids-studio"
@@ -46,15 +89,15 @@ DESKTOP
 
 cat > "$PKG_ROOT/DEBIAN/control" <<EOF2
 Package: $PKG_NAME
-Version: $VERSION
+Version: $DEB_VERSION
 Section: video
 Priority: optional
 Architecture: $ARCH
 Maintainer: MusicVid Studio Team
-Depends: libgtk-3-0, libstdc++6
+Depends: libgtk-3-0, libstdc++6, python3, python3-venv
 Description: Local-first AI music video generation studio
 EOF2
 
-dpkg-deb --build "$PKG_ROOT" "$APP_DIR/build/linux/x64/release/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+dpkg-deb --build "$PKG_ROOT" "$APP_DIR/build/linux/x64/release/${PKG_NAME}_${DEB_VERSION}_${ARCH}.deb"
 
-echo "Built package: $APP_DIR/build/linux/x64/release/${PKG_NAME}_${VERSION}_${ARCH}.deb"
+echo "Built package: $APP_DIR/build/linux/x64/release/${PKG_NAME}_${DEB_VERSION}_${ARCH}.deb"
