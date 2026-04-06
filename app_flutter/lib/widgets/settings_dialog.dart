@@ -3,8 +3,6 @@ import 'package:getwidget/getwidget.dart';
 
 import '../state/app_state.dart';
 
-import '../state/app_state.dart';
-
 class SettingsDialog extends StatefulWidget {
   final Map<String, dynamic> initial;
   const SettingsDialog({super.key, required this.initial});
