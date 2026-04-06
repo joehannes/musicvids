@@ -15,10 +15,10 @@ class AppState extends ChangeNotifier {
   final LocalStorageService localStorage = LocalStorageService();
 
   static const Map<String, String> defaultShortcutBindings = {
-    'navigate.left': 'n h',
-    'navigate.right': 'n l',
-    'navigate.up': 'n k',
-    'navigate.down': 'n j',
+    'navigate.left': 'k',
+    'navigate.right': 'j',
+    'navigate.up': 'x k',
+    'navigate.down': 'x j',
     'canvas.note.new': 'x n',
     'canvas.center': 'x c',
     'navigate.dashboard': 'n d',
@@ -49,10 +49,10 @@ class AppState extends ChangeNotifier {
   };
 
   static const Map<String, Map<String, String>> defaultShortcutMeta = {
-    'navigate.left': {'category': 'Navigation', 'label': 'Previous screen', 'description': 'Cycle to previous fullscreen screen'},
-    'navigate.right': {'category': 'Navigation', 'label': 'Next screen', 'description': 'Cycle to next fullscreen screen'},
-    'navigate.up': {'category': 'Canvas', 'label': 'Pan up within current screen', 'description': 'Move the current screen canvas up'},
-    'navigate.down': {'category': 'Canvas', 'label': 'Pan down within current screen', 'description': 'Move the current screen canvas down'},
+    'navigate.left': {'category': 'Navigation', 'label': 'Previous screen', 'description': 'Space, then K'},
+    'navigate.right': {'category': 'Navigation', 'label': 'Next screen', 'description': 'Space, then J'},
+    'navigate.up': {'category': 'Canvas', 'label': 'Pan up within current screen', 'description': 'Space, then X K'},
+    'navigate.down': {'category': 'Canvas', 'label': 'Pan down within current screen', 'description': 'Space, then X J'},
     'canvas.note.new': {'category': 'Canvas', 'label': 'Add note widget', 'description': 'Add a new draggable note to this screen'},
     'canvas.center': {'category': 'Canvas', 'label': 'Re-center canvas', 'description': 'Reset current screen pan offset'},
     'navigate.dashboard': {'category': 'Navigation', 'label': 'Jump to Dashboard'},
@@ -239,6 +239,12 @@ class AppState extends ChangeNotifier {
       if (shortcut.isNotEmpty) {
         shortcutBindings[entry.key] = shortcut;
       }
+    }
+    if (shortcutBindings['navigate.up'] == 'n k') {
+      shortcutBindings['navigate.up'] = defaultShortcutBindings['navigate.up']!;
+    }
+    if (shortcutBindings['navigate.down'] == 'n j') {
+      shortcutBindings['navigate.down'] = defaultShortcutBindings['navigate.down']!;
     }
     final customConfigured = (ui['custom_shortcuts'] as List?)
             ?.whereType<Map>()
