@@ -15,10 +15,12 @@ class MusicVidStudioApp extends StatelessWidget {
   Widget build(BuildContext context) {
     return ChangeNotifierProvider(
       create: (_) => AppState(),
-      child: MaterialApp(
-        title: 'MusicVid Studio',
-        theme: ThemeData.dark(useMaterial3: true),
-        home: const DashboardScreen(),
+      child: Consumer<AppState>(
+        builder: (_, state, __) => MaterialApp(
+          title: 'MusicVid Studio',
+          theme: state.activeTheme,
+          home: const DashboardScreen(),
+        ),
       ),
     );
   }
