@@ -26,23 +26,18 @@ class _CanvasScreen {
 class _DashboardScreenState extends State<DashboardScreen> {
   final TextEditingController _newProjectController = TextEditingController();
   final FocusNode _keyboardFocus = FocusNode();
-  final ScrollController _horizontalController = ScrollController(initialScrollOffset: 3000);
-  final ScrollController _verticalController = ScrollController(initialScrollOffset: 3000);
-
-  final double _screenCardWidth = 520;
-  final double _screenCardHeight = 420;
-  final double _screenSpacing = 620;
+  final Map<String, Offset> _screenPanOffsets = {};
 
   final List<_CanvasScreen> _screens = const [
-    _CanvasScreen(id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard, offset: Offset(0, 0)),
-    _CanvasScreen(id: 'projects', label: 'Projects', icon: Icons.folder, offset: Offset(-1, 0)),
-    _CanvasScreen(id: 'lyrics', label: 'Lyrics', icon: Icons.library_music, offset: Offset(1, 0)),
-    _CanvasScreen(id: 'channels', label: 'Channels', icon: Icons.people, offset: Offset(0, 1)),
-    _CanvasScreen(id: 'storyboard', label: 'Storyboard', icon: Icons.view_timeline, offset: Offset(0, -1)),
-    _CanvasScreen(id: 'characters', label: 'Characters', icon: Icons.person, offset: Offset(1, 1)),
-    _CanvasScreen(id: 'generation', label: 'Generation', icon: Icons.movie, offset: Offset(2, 0)),
-    _CanvasScreen(id: 'preview', label: 'Preview', icon: Icons.preview, offset: Offset(2, 1)),
-    _CanvasScreen(id: 'upload', label: 'Upload', icon: Icons.upload, offset: Offset(2, 2)),
+    _CanvasScreen(id: 'dashboard', label: 'Dashboard', icon: Icons.dashboard, offset: Offset.zero),
+    _CanvasScreen(id: 'projects', label: 'Projects', icon: Icons.folder, offset: Offset.zero),
+    _CanvasScreen(id: 'lyrics', label: 'Lyrics', icon: Icons.library_music, offset: Offset.zero),
+    _CanvasScreen(id: 'channels', label: 'Channels', icon: Icons.people, offset: Offset.zero),
+    _CanvasScreen(id: 'storyboard', label: 'Storyboard', icon: Icons.view_timeline, offset: Offset.zero),
+    _CanvasScreen(id: 'characters', label: 'Characters', icon: Icons.person, offset: Offset.zero),
+    _CanvasScreen(id: 'generation', label: 'Generation', icon: Icons.movie, offset: Offset.zero),
+    _CanvasScreen(id: 'preview', label: 'Preview', icon: Icons.preview, offset: Offset.zero),
+    _CanvasScreen(id: 'upload', label: 'Upload', icon: Icons.upload, offset: Offset.zero),
   ];
 
   String _activeScreenId = 'dashboard';
@@ -57,7 +52,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     super.initState();
     WidgetsBinding.instance.addPostFrameCallback((_) {
       context.read<AppState>().bootstrap();
-      _scrollToActiveScreen();
       _keyboardFocus.requestFocus();
       if (!_globalKeyHandlerRegistered) {
         HardwareKeyboard.instance.addHandler(_globalKeyHandler);
@@ -70,8 +64,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void dispose() {
     _mnemonicTimer?.cancel();
     _newProjectController.dispose();
-    _horizontalController.dispose();
-    _verticalController.dispose();
     _keyboardFocus.dispose();
     if (_globalKeyHandlerRegistered) {
       HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
@@ -84,39 +76,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget build(BuildContext context) {
     final state = context.watch<AppState>();
     return Scaffold(
-      appBar: AppBar(
-        title: const Text('MusicVid Studio — Infinite Canvas'),
-        actions: [
-          Center(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              child: Text(
-                _mnemonicMode
-                    ? 'Mnemonic: ${_mnemonicSequence.isEmpty ? '…' : _mnemonicSequence}'
-                    : 'Press Super+Space (or Space with no text field)',
-                style: Theme.of(context).textTheme.bodySmall,
-              ),
-            ),
-          ),
-          const SizedBox(width: 8),
-        ],
-      ),
+      appBar: null,
       floatingActionButton: FloatingActionButton(
         onPressed: () => _openSettings(state),
         tooltip: 'Settings (s o)',
         child: const Icon(Icons.settings),
       ),
       floatingActionButtonLocation: FloatingActionButtonLocation.endTop,
-      body: Focus(
-        autofocus: true,
-        focusNode: _keyboardFocus,
-        onKeyEvent: (node, event) => _onKeyEvent(state, event),
-        child: Stack(
-          children: [
-            _buildCanvas(state),
-            if (_mnemonicMode) _buildMnemonicGuide(state),
-            if (state.loading) const Positioned.fill(child: Center(child: CircularProgressIndicator())),
-          ],
+      body: SafeArea(
+        child: Focus(
+          autofocus: true,
+          focusNode: _keyboardFocus,
+          onKeyEvent: (node, event) => _onKeyEvent(state, event),
+          child: Stack(
+            children: [
+              _buildCanvas(state),
+              if (_mnemonicMode) _buildMnemonicGuide(state),
+              if (state.loading) const Positioned.fill(child: Center(child: CircularProgressIndicator())),
+            ],
+          ),
         ),
       ),
     );
@@ -169,70 +147,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildCanvas(AppState state) {
-    return Scrollbar(
-      controller: _horizontalController,
-      thumbVisibility: true,
-      child: SingleChildScrollView(
-        controller: _horizontalController,
-        scrollDirection: Axis.horizontal,
-        child: SizedBox(
-          width: 6000,
-          child: Scrollbar(
-            controller: _verticalController,
-            thumbVisibility: true,
-            notificationPredicate: (_) => true,
-            child: SingleChildScrollView(
-              controller: _verticalController,
+    final viewport = MediaQuery.sizeOf(context);
+    final pan = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
+    return GestureDetector(
+      onPanUpdate: (details) {
+        setState(() {
+          _screenPanOffsets[_activeScreenId] = pan + details.delta;
+        });
+      },
+      child: ClipRect(
+        child: Stack(
+          children: [
+            Positioned.fill(
+              child: ColoredBox(color: Theme.of(context).scaffoldBackgroundColor),
+            ),
+            Transform.translate(
+              offset: pan,
               child: SizedBox(
-                width: 6000,
-                height: 6000,
+                width: 9000,
+                height: 9000,
                 child: Stack(
-                  children: _screens.map((screen) {
-                    final left = 3000 + (screen.offset.dx * _screenSpacing) - (_screenCardWidth / 2);
-                    final top = 3000 + (screen.offset.dy * _screenSpacing) - (_screenCardHeight / 2);
-                    final active = screen.id == _activeScreenId;
-                    return Positioned(
-                      left: left,
-                      top: top,
-                      child: AnimatedContainer(
-                        duration: const Duration(milliseconds: 220),
-                        width: _screenCardWidth,
-                        height: _screenCardHeight,
-                        padding: const EdgeInsets.all(12),
-                        decoration: BoxDecoration(
-                          borderRadius: BorderRadius.circular(20),
-                          border: Border.all(
-                            color: active ? Theme.of(context).colorScheme.primary : Colors.white24,
-                            width: active ? 2.5 : 1.0,
-                          ),
-                          color: active ? Colors.white.withOpacity(0.06) : Colors.black26,
-                        ),
-                        child: Column(
-                          children: [
-                            Row(
-                              children: [
-                                Icon(screen.icon),
-                                const SizedBox(width: 8),
-                                Text(screen.label, style: Theme.of(context).textTheme.titleLarge),
-                                const Spacer(),
-                                if (active)
-                                  const Chip(
-                                    visualDensity: VisualDensity.compact,
-                                    label: Text('Active'),
-                                  ),
-                              ],
-                            ),
-                            const Divider(),
-                            Expanded(child: _pageForScreen(screen.id, state)),
-                          ],
-                        ),
-                      ),
-                    );
-                  }).toList(),
+                  children: [
+                    Positioned(
+                      left: 4500 - viewport.width / 2,
+                      top: 4500 - viewport.height / 2,
+                      width: viewport.width,
+                      height: viewport.height,
+                      child: _pageForScreen(_activeScreenId, state),
+                    ),
+                  ],
                 ),
               ),
             ),
-          ),
+          ],
         ),
       ),
     );
@@ -250,7 +197,23 @@ class _DashboardScreenState extends State<DashboardScreen> {
       if (_mnemonicSequence.isEmpty) {
         nextLetters.add(tokens.first);
       } else if (sequence.startsWith(_mnemonicSequence)) {
-        available[entry.key] = sequence;
+        final meta = state.shortcutMeta[entry.key];
+        final label = meta == null ? entry.key : '${meta['category']} → ${meta['label']}';
+        available[label] = sequence;
+        final currentTokens = _mnemonicSequence.split(' ');
+        if (tokens.length > currentTokens.length) {
+          nextLetters.add(tokens[currentTokens.length]);
+        }
+      }
+    }
+    for (final custom in state.customShortcuts) {
+      final sequence = (custom['sequence'] ?? '').trim();
+      if (sequence.isEmpty) continue;
+      final tokens = sequence.split(RegExp(r'\s+'));
+      if (_mnemonicSequence.isEmpty) {
+        nextLetters.add(tokens.first);
+      } else if (sequence.startsWith(_mnemonicSequence)) {
+        available['Custom → ${custom['label'] ?? 'Action'}'] = sequence;
         final currentTokens = _mnemonicSequence.split(' ');
         if (tokens.length > currentTokens.length) {
           nextLetters.add(tokens[currentTokens.length]);
@@ -260,16 +223,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     return Positioned(
       top: 16,
-      right: 16,
+      right: 24,
       child: AnimatedOpacity(
         duration: const Duration(milliseconds: 180),
         opacity: 1,
         child: Container(
-          width: 440,
+          width: 680,
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
-            color: _mnemonicFailed ? Colors.red.withOpacity(0.35) : Colors.black.withOpacity(0.8),
+            color: _mnemonicFailed ? Colors.red.withOpacity(0.6) : Colors.black.withOpacity(0.6),
             border: Border.all(color: Colors.white24),
           ),
           child: Column(
@@ -289,7 +252,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
               const SizedBox(height: 10),
               SizedBox(
-                height: 180,
+                height: 340,
                 child: ListView(
                   children: available.entries
                       .map((e) => ListTile(
@@ -375,6 +338,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
         .key;
 
     if (action.isEmpty) {
+      final custom = state.customShortcuts.firstWhere(
+        (entry) => (entry['sequence'] ?? '').trim() == _mnemonicSequence.trim(),
+        orElse: () => {},
+      );
+      if (custom.isNotEmpty) {
+        _showSnack('Custom shortcut: ${custom['label']}');
+        _cancelMnemonic();
+        return;
+      }
       setState(() {
         _mnemonicFailed = true;
       });
@@ -409,10 +381,37 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _moveScreen(1, 0);
         break;
       case 'navigate.up':
-        _moveScreen(0, -1);
+        _panWithinScreen(0, 1);
         break;
       case 'navigate.down':
-        _moveScreen(0, 1);
+        _panWithinScreen(0, -1);
+        break;
+      case 'navigate.dashboard':
+        _setActiveScreen('dashboard');
+        break;
+      case 'navigate.projects':
+        _setActiveScreen('projects');
+        break;
+      case 'navigate.lyrics':
+        _setActiveScreen('lyrics');
+        break;
+      case 'navigate.channels':
+        _setActiveScreen('channels');
+        break;
+      case 'navigate.storyboard':
+        _setActiveScreen('storyboard');
+        break;
+      case 'navigate.characters':
+        _setActiveScreen('characters');
+        break;
+      case 'navigate.generation':
+        _setActiveScreen('generation');
+        break;
+      case 'navigate.preview':
+        _setActiveScreen('preview');
+        break;
+      case 'navigate.upload':
+        _setActiveScreen('upload');
         break;
       case 'project.new':
         await _showQuickCreateProjectDialog(state);
@@ -475,90 +474,41 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final viewport = MediaQuery.sizeOf(context);
     final deltaX = viewport.width / 5;
     final deltaY = viewport.height / 5;
-
     if (direction == 'h') {
-      _horizontalController.animateTo(
-        (_horizontalController.offset - deltaX).clamp(0, _horizontalController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
+      _panWithinScreen(deltaX, 0);
     } else if (direction == 'l') {
-      _horizontalController.animateTo(
-        (_horizontalController.offset + deltaX).clamp(0, _horizontalController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
+      _panWithinScreen(-deltaX, 0);
     } else if (direction == 'k') {
-      _verticalController.animateTo(
-        (_verticalController.offset - deltaY).clamp(0, _verticalController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
+      _panWithinScreen(0, deltaY);
     } else if (direction == 'j') {
-      _verticalController.animateTo(
-        (_verticalController.offset + deltaY).clamp(0, _verticalController.position.maxScrollExtent),
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOut,
-      );
+      _panWithinScreen(0, -deltaY);
     }
   }
 
   void _moveScreen(int dx, int dy) {
-    final current = _screens.firstWhere((s) => s.id == _activeScreenId);
-    final sameAxisCandidates = _screens.where((candidate) {
-      if (dx != 0) {
-        return candidate.offset.dy == current.offset.dy;
-      }
-      return candidate.offset.dx == current.offset.dx;
-    }).toList();
-
-    _CanvasScreen? target;
-    if (dx > 0) {
-      final right = sameAxisCandidates.where((c) => c.offset.dx > current.offset.dx).toList();
-      target = right.isNotEmpty
-          ? right.reduce((a, b) => a.offset.dx < b.offset.dx ? a : b)
-          : sameAxisCandidates.reduce((a, b) => a.offset.dx > b.offset.dx ? a : b);
-    } else if (dx < 0) {
-      final left = sameAxisCandidates.where((c) => c.offset.dx < current.offset.dx).toList();
-      target = left.isNotEmpty
-          ? left.reduce((a, b) => a.offset.dx > b.offset.dx ? a : b)
-          : sameAxisCandidates.reduce((a, b) => a.offset.dx < b.offset.dx ? a : b);
-    } else if (dy > 0) {
-      final down = sameAxisCandidates.where((c) => c.offset.dy > current.offset.dy).toList();
-      target = down.isNotEmpty
-          ? down.reduce((a, b) => a.offset.dy < b.offset.dy ? a : b)
-          : sameAxisCandidates.reduce((a, b) => a.offset.dy > b.offset.dy ? a : b);
-    } else {
-      final up = sameAxisCandidates.where((c) => c.offset.dy < current.offset.dy).toList();
-      target = up.isNotEmpty
-          ? up.reduce((a, b) => a.offset.dy > b.offset.dy ? a : b)
-          : sameAxisCandidates.reduce((a, b) => a.offset.dy < b.offset.dy ? a : b);
-    }
-
-    setState(() {
-      _activeScreenId = (target ?? current).id;
-    });
-    _scrollToActiveScreen();
-  }
-
-  void _scrollToActiveScreen() {
-    if (!_horizontalController.hasClients || !_verticalController.hasClients) {
+    if (dy != 0) {
       return;
     }
-    final current = _screens.firstWhere((s) => s.id == _activeScreenId);
-    final viewport = MediaQuery.sizeOf(context);
-    final targetX = 3000 + (current.offset.dx * _screenSpacing) - viewport.width / 2;
-    final targetY = 3000 + (current.offset.dy * _screenSpacing) - viewport.height / 2;
-    _horizontalController.animateTo(
-      targetX.clamp(0, _horizontalController.position.maxScrollExtent),
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeInOut,
-    );
-    _verticalController.animateTo(
-      targetY.clamp(0, _verticalController.position.maxScrollExtent),
-      duration: const Duration(milliseconds: 260),
-      curve: Curves.easeInOut,
-    );
+    final currentIndex = _screens.indexWhere((s) => s.id == _activeScreenId);
+    if (currentIndex < 0) return;
+    final nextIndex = (currentIndex + dx) % _screens.length;
+    setState(() {
+      _activeScreenId = _screens[nextIndex < 0 ? _screens.length + nextIndex : nextIndex].id;
+    });
+  }
+
+  void _setActiveScreen(String screenId) {
+    if (_activeScreenId == screenId) return;
+    setState(() {
+      _activeScreenId = screenId;
+    });
+  }
+
+  void _panWithinScreen(double dx, double dy) {
+    final current = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
+    setState(() {
+      _screenPanOffsets[_activeScreenId] = Offset(current.dx + dx, current.dy + dy);
+    });
   }
 
   bool _isTextFieldFocused() {
@@ -684,18 +634,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final characters = (project?['characters'] as List?) ?? [];
     return ListView(
       children: [
-        Container(
-          padding: const EdgeInsets.all(12),
-          decoration: BoxDecoration(
-            color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.35),
-            borderRadius: BorderRadius.circular(12),
-            border: Border.all(color: Theme.of(context).colorScheme.primary),
-          ),
-          child: const Text(
-            'INFINITE CANVAS MODE ACTIVE — Trigger mnemonics with Super+Space (or Space when no input is focused).',
-          ),
-        ),
-        const SizedBox(height: 12),
         Wrap(
           spacing: 10,
           runSpacing: 10,

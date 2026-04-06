@@ -24,8 +24,8 @@ class BackendRuntimeService {
 
     if (script.isNotEmpty) {
       await Process.start(
-        script,
-        const [],
+        'bash',
+        [script],
         mode: ProcessStartMode.detached,
         runInShell: true,
       );
@@ -33,7 +33,7 @@ class BackendRuntimeService {
       await _fallbackLaunchFromRepo();
     }
 
-    final deadline = DateTime.now().add(const Duration(seconds: 12));
+    final deadline = DateTime.now().add(const Duration(seconds: 90));
     while (DateTime.now().isBefore(deadline)) {
       if (await _isHealthy()) {
         return;

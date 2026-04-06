@@ -19,6 +19,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController openaiKey;
 
   late final Map<String, TextEditingController> shortcutControllers;
+  final List<TextEditingController> customSequenceControllers = [];
+  final List<TextEditingController> customLabelControllers = [];
 
   @override
   void initState() {
@@ -35,6 +37,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
       for (final entry in AppState.defaultShortcutBindings.entries)
         entry.key: TextEditingController(text: existing[entry.key]?.toString() ?? entry.value),
     };
+    final customShortcuts = ((widget.initial['ui'] as Map?)?['custom_shortcuts'] as List?)?.whereType<Map>().toList() ?? [];
+    for (final item in customShortcuts) {
+      customSequenceControllers.add(TextEditingController(text: item['sequence']?.toString() ?? ''));
+      customLabelControllers.add(TextEditingController(text: item['label']?.toString() ?? ''));
+    }
   }
 
   @override
@@ -46,6 +53,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
     tiktokPass.dispose();
     openaiKey.dispose();
     for (final controller in shortcutControllers.values) {
+      controller.dispose();
+    }
+    for (final controller in customSequenceControllers) {
+      controller.dispose();
+    }
+    for (final controller in customLabelControllers) {
       controller.dispose();
     }
     super.dispose();
@@ -90,6 +103,54 @@ class _SettingsDialogState extends State<SettingsDialog> {
                   ),
                 );
               }),
+              const SizedBox(height: 14),
+              Row(
+                children: [
+                  Text('Custom shortcuts', style: Theme.of(context).textTheme.titleMedium),
+                  const Spacer(),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      setState(() {
+                        customSequenceControllers.add(TextEditingController());
+                        customLabelControllers.add(TextEditingController());
+                      });
+                    },
+                    icon: const Icon(Icons.add),
+                    label: const Text('Add'),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              ...List.generate(customSequenceControllers.length, (index) {
+                return Padding(
+                  padding: const EdgeInsets.only(bottom: 8),
+                  child: Row(
+                    children: [
+                      Expanded(
+                        flex: 2,
+                        child: TextField(
+                          controller: customSequenceControllers[index],
+                          decoration: const InputDecoration(
+                            labelText: 'Sequence',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        flex: 3,
+                        child: TextField(
+                          controller: customLabelControllers[index],
+                          decoration: const InputDecoration(
+                            labelText: 'Meaning',
+                            border: OutlineInputBorder(),
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                );
+              }),
             ],
           ),
         ),
@@ -108,6 +169,12 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 'shortcuts': {
                   for (final shortcut in shortcutControllers.entries) shortcut.key: shortcut.value.text.trim(),
                 },
+                'custom_shortcuts': List.generate(customSequenceControllers.length, (index) {
+                  return {
+                    'sequence': customSequenceControllers[index].text.trim(),
+                    'label': customLabelControllers[index].text.trim(),
+                  };
+                }).where((entry) => (entry['sequence'] ?? '').isNotEmpty && (entry['label'] ?? '').isNotEmpty).toList(),
               },
             });
           },

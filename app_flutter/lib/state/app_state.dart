@@ -18,6 +18,15 @@ class AppState extends ChangeNotifier {
     'navigate.right': 'n l',
     'navigate.up': 'n k',
     'navigate.down': 'n j',
+    'navigate.dashboard': 'n d',
+    'navigate.projects': 'n p',
+    'navigate.lyrics': 'n y',
+    'navigate.channels': 'n c',
+    'navigate.storyboard': 'n b',
+    'navigate.characters': 'n a',
+    'navigate.generation': 'n g',
+    'navigate.preview': 'n v',
+    'navigate.upload': 'n u',
     'project.new': 'p n',
     'project.open': 'p o',
     'project.save': 'p s',
@@ -36,6 +45,38 @@ class AppState extends ChangeNotifier {
     'settings.open': 's o',
   };
 
+  static const Map<String, Map<String, String>> defaultShortcutMeta = {
+    'navigate.left': {'category': 'Navigation', 'label': 'Previous screen'},
+    'navigate.right': {'category': 'Navigation', 'label': 'Next screen'},
+    'navigate.up': {'category': 'Canvas', 'label': 'Pan up within current screen'},
+    'navigate.down': {'category': 'Canvas', 'label': 'Pan down within current screen'},
+    'navigate.dashboard': {'category': 'Navigation', 'label': 'Jump to Dashboard'},
+    'navigate.projects': {'category': 'Navigation', 'label': 'Jump to Projects'},
+    'navigate.lyrics': {'category': 'Navigation', 'label': 'Jump to Lyrics'},
+    'navigate.channels': {'category': 'Navigation', 'label': 'Jump to Channels'},
+    'navigate.storyboard': {'category': 'Navigation', 'label': 'Jump to Storyboard'},
+    'navigate.characters': {'category': 'Navigation', 'label': 'Jump to Characters'},
+    'navigate.generation': {'category': 'Navigation', 'label': 'Jump to Generation'},
+    'navigate.preview': {'category': 'Navigation', 'label': 'Jump to Preview'},
+    'navigate.upload': {'category': 'Navigation', 'label': 'Jump to Upload'},
+    'project.new': {'category': 'Project', 'label': 'Create project'},
+    'project.open': {'category': 'Project', 'label': 'Open first project'},
+    'project.save': {'category': 'Project', 'label': 'Save active project'},
+    'project.refresh': {'category': 'Project', 'label': 'Refresh backend/projects'},
+    'channel.new': {'category': 'Channel', 'label': 'Create channel'},
+    'channel.sync': {'category': 'Channel', 'label': 'Sync channels'},
+    'channel.update': {'category': 'Channel', 'label': 'Update channel'},
+    'lyrics.new': {'category': 'Lyrics', 'label': 'Add lyric section'},
+    'lyrics.delete': {'category': 'Lyrics', 'label': 'Delete last lyric section'},
+    'lyrics.chapter': {'category': 'Lyrics', 'label': 'Next chapter'},
+    'storyboard.scene.new': {'category': 'Storyboard', 'label': 'Add scene'},
+    'character.new': {'category': 'Characters', 'label': 'Add character'},
+    'generation.run': {'category': 'Generation', 'label': 'Run full workflow'},
+    'generation.next': {'category': 'Generation', 'label': 'Next generation slot'},
+    'generation.prev': {'category': 'Generation', 'label': 'Previous generation slot'},
+    'settings.open': {'category': 'Settings', 'label': 'Open settings dialog'},
+  };
+
   List<String> projects = [];
   Map<String, dynamic> settings = {};
   Map<String, dynamic>? activeProject;
@@ -47,6 +88,8 @@ class AppState extends ChangeNotifier {
   int selectedEpisodeIndex = 0;
 
   final Map<String, String> shortcutBindings = {...defaultShortcutBindings};
+  final Map<String, Map<String, String>> shortcutMeta = {...defaultShortcutMeta};
+  List<Map<String, String>> customShortcuts = [];
 
   Future<void> bootstrap() async {
     loading = true;
@@ -168,10 +211,17 @@ class AppState extends ChangeNotifier {
         shortcutBindings[entry.key] = shortcut;
       }
     }
+    final customConfigured = (ui['custom_shortcuts'] as List?)
+            ?.whereType<Map>()
+            .map((e) => e.map((key, value) => MapEntry(key.toString(), value.toString())))
+            .toList() ??
+        <Map<String, String>>[];
+    customShortcuts = customConfigured;
 
     sourceSettings['ui'] = {
       ...ui,
       'shortcuts': shortcutBindings,
+      'custom_shortcuts': customShortcuts,
     };
   }
 }
