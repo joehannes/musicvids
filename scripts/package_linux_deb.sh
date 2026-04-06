@@ -6,7 +6,7 @@ APP_DIR="$ROOT_DIR/app_flutter"
 BACKEND_DIR="$ROOT_DIR/backend_python"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
-VERSION="${1:-0.2.2}"
+VERSION="${1:-0.1.1}"
 ARCH="amd64"
 PKG_NAME="musicvids-studio"
 PUBSPEC_VERSION="$VERSION"
@@ -44,8 +44,25 @@ if not replaced:
 pubspec.write_text("\\n".join(updated) + "\\n")
 PY
 
+python3 - <<PY
+from pathlib import Path
+candidates = [
+    Path("$APP_DIR/lib/screens/dashboard_screen.dart"),
+    Path("$ROOT_DIR/bckup/lib/screens/dashboard_screen.dart"),
+]
+for file in candidates:
+    if not file.exists():
+        continue
+    content = file.read_text()
+    fixed = content.replace("return const ListView(", "return ListView(")
+    if fixed != content:
+        file.write_text(fixed)
+        print(f"Applied compatibility fix in {file}")
+PY
+
 (
   cd "$APP_DIR"
+  flutter clean
   flutter pub get
   flutter build linux --release
 )
