@@ -667,12 +667,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
     final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    final lyrics = _ensureLyricsStructure(project);
+    final defaultLang = ((lyrics['languages'] as List?)?.isNotEmpty ?? false) 
+        ? (lyrics['languages'] as List).first.toString() 
+        : 'en';
+    
     channels.add({
       'channel_id': 'channel_${channels.length + 1}',
-      'language': 'en',
+      'language': defaultLang,
       'title': 'New Channel',
+      'handle': '',
       'description': '',
-      'vibe': 'cinematic',
+      'keywords': '',
+      'brand_category': '',
+      'overall_style': 'cinematic',
+      'channel_style': '',
+      'vibe': 'experimental',
       'visual_style': 'stylized',
       'enabled': true,
     });
@@ -1086,53 +1096,410 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final project = state.activeProject;
     if (project == null) return const Center(child: Text('Load a project first.'));
     final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    final lyrics = _ensureLyricsStructure(project);
+    final availableLangs = (lyrics['languages'] as List?)?.cast<String>() ?? ['en'];
+
     return ListView(
       children: [
+        // Control space for Suno generation
+        _buildSunoControlSpace(state, project, availableLangs),
+        const SizedBox(height: 20),
+        
+        // Channels management header
         Row(
           children: [
+            Text('YouTube Channels', style: Theme.of(context).textTheme.titleLarge),
             const Spacer(),
-            FilledButton.icon(onPressed: () => _addChannel(state), icon: const Icon(Icons.add), label: const Text('Add channel')),
+            FilledButton.icon(
+              onPressed: () => _openYouTubeChannelCreation(state),
+              icon: const Icon(Icons.open_in_new),
+              label: const Text('Open YouTube'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              onPressed: () => _addChannel(state),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Channel'),
+            ),
           ],
         ),
-        const SizedBox(height: 8),
-        ...channels.map((raw) {
+        const SizedBox(height: 12),
+        
+        if (channels.isEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: Text('No channels configured yet. Click "Add Channel" to create one.'),
+            ),
+          ),
+        
+        // Channels list
+        ...channels.asMap().entries.map((e) {
+          final index = e.key;
+          final raw = e.value;
           final ch = raw.cast<String, dynamic>();
+          final isEnabled = ch['enabled'] ?? true;
+          final channelLang = ch['language']?.toString() ?? 'en';
+          final isLanguageMuted = !availableLangs.contains(channelLang);
+
           return Card(
+            color: isLanguageMuted ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
                 children: [
+                  // Header with enable toggle and channel ID
+                  Row(
+                    children: [
+                      Checkbox(
+                        value: isEnabled,
+                        onChanged: (v) {
+                          if (v != null) {
+                            ch['enabled'] = v;
+                            state.touch();
+                          }
+                        },
+                      ),
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['channel_id']?.toString(),
+                          decoration: const InputDecoration(
+                            labelText: 'Channel ID',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['channel_id'] = v,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      OutlinedButton.icon(
+                        onPressed: () => _deleteChannel(state, index),
+                        icon: const Icon(Icons.delete),
+                        label: const Text('Delete'),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // Language field with available languages
+                  Opacity(
+                    opacity: isLanguageMuted ? 0.6 : 1.0,
+                    child: Tooltip(
+                      message: isLanguageMuted
+                          ? 'This language is not used in the lyrics section. Add it to lyrics first.'
+                          : 'Language used for content generation',
+                      child: DropdownButtonFormField<String>(
+                        value: channelLang,
+                        items: availableLangs
+                            .map((lang) => DropdownMenuItem(
+                                  value: lang,
+                                  child: Text(lang.toUpperCase()),
+                                ))
+                            .toList(),
+                        onChanged: isLanguageMuted
+                            ? null
+                            : (v) {
+                                if (v != null) {
+                                  ch['language'] = v;
+                                  state.touch();
+                                }
+                              },
+                        decoration: InputDecoration(
+                          labelText: 'Language',
+                          border: const OutlineInputBorder(),
+                          helperText: isLanguageMuted ? 'Not defined in lyrics' : null,
+                        ),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // Basic channel info
                   Row(
                     children: [
                       Expanded(
                         child: TextFormField(
-                          initialValue: ch['channel_id']?.toString(),
-                          decoration: const InputDecoration(labelText: 'Channel ID'),
-                          onChanged: (v) => ch['channel_id'] = v,
+                          initialValue: ch['title']?.toString(),
+                          decoration: const InputDecoration(
+                            labelText: 'Channel Title',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['title'] = v,
                         ),
                       ),
                       const SizedBox(width: 8),
                       Expanded(
                         child: TextFormField(
-                          initialValue: ch['language']?.toString(),
-                          decoration: const InputDecoration(labelText: 'Language'),
-                          onChanged: (v) => ch['language'] = v,
+                          initialValue: ch['handle']?.toString(),
+                          decoration: const InputDecoration(
+                            labelText: 'Channel Handle (@username)',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['handle'] = v,
                         ),
                       ),
                     ],
                   ),
+                  const SizedBox(height: 12),
+                  
+                  // Description
                   TextFormField(
-                    initialValue: ch['title']?.toString(),
-                    decoration: const InputDecoration(labelText: 'Title'),
-                    onChanged: (v) => ch['title'] = v,
+                    initialValue: ch['description']?.toString(),
+                    decoration: const InputDecoration(
+                      labelText: 'Channel Description',
+                      border: OutlineInputBorder(),
+                    ),
+                    maxLines: 2,
+                    onChanged: (v) => ch['description'] = v,
                   ),
+                  const SizedBox(height: 12),
+                  
+                  // Keywords and tags
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['keywords']?.toString(),
+                          decoration: const InputDecoration(
+                            labelText: 'Keywords (comma-separated)',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['keywords'] = v,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['brand_category']?.toString(),
+                          decoration: const InputDecoration(
+                            labelText: 'Brand Category',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['brand_category'] = v,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // Style settings
+                  Text('Content Style', style: Theme.of(context).textTheme.titleSmall),
+                  const SizedBox(height: 8),
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['overall_style']?.toString() ?? 'cinematic',
+                          decoration: const InputDecoration(
+                            labelText: 'Overall Style',
+                            border: OutlineInputBorder(),
+                            helperText: 'e.g., cinematic, documentary, artistic',
+                          ),
+                          onChanged: (v) => ch['overall_style'] = v,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['channel_style']?.toString() ?? '',
+                          decoration: const InputDecoration(
+                            labelText: 'Channel-Specific Style',
+                            border: OutlineInputBorder(),
+                            helperText: 'Channel branding style',
+                          ),
+                          onChanged: (v) => ch['channel_style'] = v,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 12),
+                  
+                  // Visual properties
+                  Row(
+                    children: [
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['visual_style']?.toString() ?? 'stylized',
+                          decoration: const InputDecoration(
+                            labelText: 'Visual Style',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['visual_style'] = v,
+                        ),
+                      ),
+                      const SizedBox(width: 8),
+                      Expanded(
+                        child: TextFormField(
+                          initialValue: ch['vibe']?.toString() ?? '',
+                          decoration: const InputDecoration(
+                            labelText: 'Vibe/Mood',
+                            border: OutlineInputBorder(),
+                          ),
+                          onChanged: (v) => ch['vibe'] = v,
+                        ),
+                      ),
+                    ],
+                  ),
+                  
+                  if (isLanguageMuted)
+                    Container(
+                      margin: const EdgeInsets.only(top: 12),
+                      padding: const EdgeInsets.all(8),
+                      decoration: BoxDecoration(
+                        color: Colors.orange.withOpacity(0.2),
+                        borderRadius: BorderRadius.circular(4),
+                        border: Border.all(color: Colors.orange.withOpacity(0.5)),
+                      ),
+                      child: Row(
+                        children: [
+                          const Icon(Icons.info_outline, size: 16),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: Text(
+                              'This channel language ($channelLang) is not defined in Lyrics. Add this language to the Lyrics section to enable editing.',
+                              style: Theme.of(context).textTheme.bodySmall,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                 ],
               ),
             ),
           );
-        }),
+        }).toList(),
       ],
     );
+  }
+
+  Widget _buildSunoControlSpace(AppState state, Map<String, dynamic> project, List<String> availableLangs) {
+    return Card(
+      color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+      child: Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                const Icon(Icons.music_note),
+                const SizedBox(width: 8),
+                Text('Suno Song Generation', style: Theme.of(context).textTheme.titleMedium),
+              ],
+            ),
+            const SizedBox(height: 12),
+            Text(
+              'Generate songs for all channels using Suno API. Songs will be created according to each channel\'s language, style, and mood settings.',
+              style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Wrap(
+              spacing: 8,
+              runSpacing: 8,
+              children: [
+                FilledButton.icon(
+                  onPressed: state.settings['suno']?['token'] != null && (state.settings['suno']['token'] as String).isNotEmpty
+                      ? () => _generateSongsForAllChannels(state, project)
+                      : null,
+                  icon: const Icon(Icons.play_arrow),
+                  label: const Text('Generate for All Channels'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: state.settings['suno']?['token'] != null && (state.settings['suno']['token'] as String).isNotEmpty
+                      ? () => _generateSongsForLanguages(state, project, availableLangs)
+                      : null,
+                  icon: const Icon(Icons.language),
+                  label: const Text('Generate by Language'),
+                ),
+                OutlinedButton.icon(
+                  onPressed: () => ScaffoldMessenger.of(context).showSnackBar(
+                    const SnackBar(content: Text('Suno generation status tracking coming soon')),
+                  ),
+                  icon: const Icon(Icons.schedule),
+                  label: const Text('View Status'),
+                ),
+              ],
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  void _openYouTubeChannelCreation(AppState state) {
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final accountEmail = youtubeSettings?['account_email'] as String?;
+    final brandChannelId = youtubeSettings?['brand_channel_id'] as String?;
+
+    if (accountEmail == null || accountEmail.isEmpty) {
+      _showSnack('Set your YouTube account email in Settings first.');
+      return;
+    }
+
+    // Open YouTube brand accounts page
+    // https://www.youtube.com/channel_list - for brand accounts
+    // https://www.youtube.com/create - for channel creation
+    final url = 'https://www.youtube.com/channel_list';
+    _launchUrl(url);
+  }
+
+  void _launchUrl(String urlString) {
+    // In a real app, you'd use url_launcher package
+    // For now, we'll just show a notification with the URL
+    _showSnack('Open in browser: $urlString');
+  }
+
+  void _deleteChannel(AppState state, int index) {
+    showDialog(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Delete Channel'),
+        content: const Text('Are you sure you want to delete this channel?'),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(
+            onPressed: () {
+              final project = state.activeProject;
+              if (project != null) {
+                final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+                if (index >= 0 && index < channels.length) {
+                  channels.removeAt(index);
+                  project['channels'] = channels;
+                  state.touch();
+                  Navigator.pop(context);
+                  _showSnack('Channel deleted.');
+                }
+              }
+            },
+            child: const Text('Delete'),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Future<void> _generateSongsForAllChannels(AppState state, Map<String, dynamic> project) async {
+    _showSnack('Starting song generation for all channels...');
+    final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    final enabled = channels.where((ch) => ch['enabled'] ?? true).toList();
+    
+    if (enabled.isEmpty) {
+      _showSnack('No enabled channels found.');
+      return;
+    }
+
+    _showSnack('Generating ${enabled.length} song(s)... (implementation pending)');
+    // TODO: Integrate with Suno API to generate songs based on:
+    // - Language
+    // - Lyrics from project['lyrics']
+    // - Overall style
+    // - Channel-specific style
+    // - Vibe/mood
+  }
+
+  Future<void> _generateSongsForLanguages(AppState state, Map<String, dynamic> project, List<String> languages) async {
+    _showSnack('Generating songs by language... (implementation pending)');
+    // TODO: Allow user to select which languages to generate for
   }
 
   Widget _storyboardPage(AppState state) {
@@ -1240,7 +1607,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _uploadPage(AppState state) {
-    return const ListView(
+    return ListView(
       children: [
         Text('Batch upload placeholders are ready in backend upload service.'),
         ListTile(

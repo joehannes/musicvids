@@ -14,6 +14,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController sunoToken;
   late final TextEditingController midjourneyToken;
   late final TextEditingController youtubeKey;
+  late final TextEditingController youtubeEmail;
+  late final TextEditingController youtubeHandle;
+  late final TextEditingController youtubeBrandChannelId;
   late final TextEditingController tiktokUser;
   late final TextEditingController tiktokPass;
   late final TextEditingController openaiKey;
@@ -29,6 +32,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
     sunoToken = TextEditingController(text: widget.initial['suno']?['token'] ?? '');
     midjourneyToken = TextEditingController(text: widget.initial['midjourney']?['discord_token'] ?? '');
     youtubeKey = TextEditingController(text: widget.initial['youtube']?['api_key'] ?? '');
+    youtubeEmail = TextEditingController(text: widget.initial['youtube']?['account_email'] ?? '');
+    youtubeHandle = TextEditingController(text: widget.initial['youtube']?['account_handle'] ?? '');
+    youtubeBrandChannelId = TextEditingController(text: widget.initial['youtube']?['brand_channel_id'] ?? '');
     tiktokUser = TextEditingController(text: widget.initial['tiktok']?['username'] ?? '');
     tiktokPass = TextEditingController(text: widget.initial['tiktok']?['password'] ?? '');
     openaiKey = TextEditingController(text: widget.initial['openai']?['api_key'] ?? '');
@@ -51,6 +57,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
     sunoToken.dispose();
     midjourneyToken.dispose();
     youtubeKey.dispose();
+    youtubeEmail.dispose();
+    youtubeHandle.dispose();
+    youtubeBrandChannelId.dispose();
     tiktokUser.dispose();
     tiktokPass.dispose();
     openaiKey.dispose();
@@ -81,7 +90,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
               const SizedBox(height: 8),
               TextField(controller: sunoToken, decoration: const InputDecoration(labelText: 'Suno Token')),
               TextField(controller: midjourneyToken, decoration: const InputDecoration(labelText: 'Midjourney Discord Token')),
+              const SizedBox(height: 12),
+              Text('YouTube Account', style: Theme.of(context).textTheme.titleSmall),
               TextField(controller: youtubeKey, decoration: const InputDecoration(labelText: 'YouTube API Key')),
+              TextField(controller: youtubeEmail, decoration: const InputDecoration(labelText: 'Google Account Email')),
+              TextField(controller: youtubeHandle, decoration: const InputDecoration(labelText: 'YouTube Channel Handle (@username)')),
+              TextField(controller: youtubeBrandChannelId, decoration: const InputDecoration(labelText: 'Brand Account Channel ID')),
+              const SizedBox(height: 12),
               TextField(controller: tiktokUser, decoration: const InputDecoration(labelText: 'TikTok Username')),
               TextField(controller: tiktokPass, decoration: const InputDecoration(labelText: 'TikTok Password'), obscureText: true),
               TextField(controller: openaiKey, decoration: const InputDecoration(labelText: 'OpenAI API Key (optional)')),
@@ -184,7 +199,13 @@ class _SettingsDialogState extends State<SettingsDialog> {
             Navigator.pop(context, {
               'suno': {'token': sunoToken.text},
               'midjourney': {'discord_token': midjourneyToken.text},
-              'youtube': {'api_key': youtubeKey.text, 'channel_ids': []},
+              'youtube': {
+                'api_key': youtubeKey.text,
+                'account_email': youtubeEmail.text,
+                'account_handle': youtubeHandle.text,
+                'brand_channel_id': youtubeBrandChannelId.text,
+                'channel_ids': []
+              },
               'tiktok': {'username': tiktokUser.text, 'password': tiktokPass.text},
               'openai': {'api_key': openaiKey.text},
               'ui': {

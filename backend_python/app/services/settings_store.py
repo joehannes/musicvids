@@ -15,7 +15,15 @@ class SettingsStore:
         return {
             "suno": {"token": "", "base_url": ""},
             "midjourney": {"discord_token": "", "proxy_url": ""},
-            "youtube": {"api_key": "", "channel_ids": []},
+            "youtube": {
+                "api_key": "",
+                "account_email": "",
+                "account_handle": "",
+                "channel_ids": [],
+                "brand_channel_id": "",
+                "refresh_token": "",
+                "access_token": "",
+            },
             "tiktok": {"username": "", "password": ""},
             "openai": {"api_key": ""},
         }
