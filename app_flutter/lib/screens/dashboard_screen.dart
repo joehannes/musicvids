@@ -131,14 +131,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final keyLabel = key.keyLabel.toLowerCase();
     final textFieldFocused = _isTextFieldFocused();
 
-    if (!_mnemonicMode && key == LogicalKeyboardKey.space) {
-      if (HardwareKeyboard.instance.isMetaPressed || !textFieldFocused) {
-        _startMnemonicMode();
-        return KeyEventResult.handled;
-      }
+    // Disable all mnemonic shortcuts when a text field is focused
+    if (textFieldFocused) {
+      return KeyEventResult.ignored;
     }
 
-    if (!_mnemonicMode && !textFieldFocused && ['h', 'j', 'k', 'l'].contains(keyLabel)) {
+    if (!_mnemonicMode && key == LogicalKeyboardKey.space) {
+      _startMnemonicMode();
+      return KeyEventResult.handled;
+    }
+
+    if (!_mnemonicMode && ['h', 'j', 'k', 'l'].contains(keyLabel)) {
       _scrollByDirection(keyLabel);
       return KeyEventResult.handled;
     }
@@ -148,6 +151,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
         _cancelMnemonic();
         return KeyEventResult.handled;
       }
+      if (key == LogicalKeyboardKey.backspace) {
+        if (_mnemonicSequence.isNotEmpty) {
+          final parts = _mnemonicSequence.split(' ');
+          parts.removeLast();
+          _mnemonicSequence = parts.join(' ');
+          _mnemonicFailed = false;
+          setState(() {});
+          return KeyEventResult.handled;
+        }
+        return KeyEventResult.ignored;
+      }
       if (RegExp(r'^[a-z]$').hasMatch(keyLabel)) {
         _mnemonicSequence = _mnemonicSequence.isEmpty ? keyLabel : '$_mnemonicSequence $keyLabel';
         _mnemonicFailed = false;
@@ -155,7 +169,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           unawaited(_resolveMnemonicSequence(state));
           return KeyEventResult.handled;
         }
-        _restartMnemonicTimer(state);
         setState(() {});
         return KeyEventResult.handled;
       }
@@ -219,6 +232,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildMnemonicGuide(AppState state) {
     final available = <Map<String, String>>[];
     final nextLetters = <String>{};
+    final categoriesMap = <String, int>{};
 
     for (final entry in state.shortcutBindings.entries) {
       final sequence = entry.value.trim();
@@ -231,7 +245,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'title': '${meta['category']} → ${meta['label']}',
           'description': meta['description'] ?? 'Available shortcut action',
           'sequence': sequence,
+          'category': meta['category'] ?? 'Action',
         });
+        if (_mnemonicSequence.isEmpty) {
+          categoriesMap[meta['category'] ?? 'Action'] = (categoriesMap[meta['category'] ?? 'Action'] ?? 0) + 1;
+        }
       }
 
       if (_mnemonicSequence.isEmpty) {
@@ -254,7 +272,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           'title': 'Custom → ${custom['label'] ?? 'Action'}',
           'description': 'User defined shortcut',
           'sequence': sequence,
+          'category': 'Custom',
         });
+        if (_mnemonicSequence.isEmpty) {
+          categoriesMap['Custom'] = (categoriesMap['Custom'] ?? 0) + 1;
+        }
       }
 
       if (_mnemonicSequence.isEmpty) {
@@ -268,7 +290,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     available.sort((a, b) => (a['title'] ?? '').compareTo(b['title'] ?? ''));
-    final capped = available.take(24).toList();
+
+    // Show categories on initial state, shortcuts otherwise
+    final isInitialState = _mnemonicSequence.isEmpty;
+    final displayItems = isInitialState
+        ? categoriesMap.entries.map((e) => {'title': e.key, 'description': '${e.value} shortcut${e.value != 1 ? 's' : ''}'}).toList()
+        : available;
 
     return Align(
       alignment: Alignment.center,
@@ -287,10 +314,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
             crossAxisAlignment: CrossAxisAlignment.start,
             mainAxisSize: MainAxisSize.min,
             children: [
-              Text('Mnemonic Guide', style: Theme.of(context).textTheme.titleLarge),
+              Text(
+                isInitialState ? 'Mnemonic Categories' : 'Mnemonic Guide',
+                style: Theme.of(context).textTheme.titleLarge,
+              ),
               const SizedBox(height: 6),
               Text(
-                _mnemonicSequence.isEmpty ? 'Type a sequence (example: S O)' : 'Sequence: $_mnemonicSequence',
+                isInitialState
+                    ? 'Press the first letter of a category to see shortcuts'
+                    : (_mnemonicSequence.isEmpty ? 'Type a sequence (example: S O)' : 'Sequence: $_mnemonicSequence')
+                        .replaceAll('Type a sequence', 'Continue typing or press Backspace to go back'),
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 10),
@@ -304,19 +337,36 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     .toList(),
               ),
               const SizedBox(height: 10),
-              SizedBox(
-                height: 360,
-                child: ListView(
-                  children: capped
-                      .map((e) => ListTile(
-                            dense: true,
-                            visualDensity: VisualDensity.compact,
-                            title: Text(e['title'] ?? ''),
-                            subtitle: Text(e['description'] ?? ''),
-                            trailing: Text((e['sequence'] ?? '').toUpperCase()),
-                          ))
-                      .toList(),
+              MouseRegion(
+                child: ScrollConfiguration(
+                  behavior: ScrollConfiguration.of(context).copyWith(
+                    scrollbars: true,
+                  ),
+                  child: SizedBox(
+                    height: 360,
+                    child: Scrollbar(
+                      thumbVisibility: true,
+                      child: ListView(
+                        children: displayItems
+                            .map((e) => ListTile(
+                                  dense: true,
+                                  visualDensity: VisualDensity.compact,
+                                  title: Text(e['title'] ?? ''),
+                                  subtitle: Text(e['description'] ?? ''),
+                                  trailing: Text((e['sequence'] ?? '').toUpperCase()),
+                                ))
+                            .toList(),
+                      ),
+                    ),
+                  ),
                 ),
+              ),
+              const SizedBox(height: 8),
+              Text(
+                'Press ESC to close • Press Backspace to go back • Press a letter to continue',
+                style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      color: Colors.white54,
+                    ),
               ),
             ],
           ),
@@ -386,12 +436,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
       _mnemonicSequence = '';
       _mnemonicFailed = false;
     });
-    _restartMnemonicTimer(context.read<AppState>());
   }
 
   void _restartMnemonicTimer(AppState state) {
+    // Timer no longer used - guide persists until shortcut triggered or ESC pressed
     _mnemonicTimer?.cancel();
-    _mnemonicTimer = Timer(const Duration(seconds: 1), () => _resolveMnemonicSequence(state));
   }
 
   Future<void> _resolveMnemonicSequence(AppState state) async {
@@ -419,9 +468,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    await _runAction(action, state);
+    // Dismiss guide first, then run action
+    _cancelMnemonic();
     if (mounted) {
-      _cancelMnemonic();
+      await _runAction(action, state);
     }
   }
 
