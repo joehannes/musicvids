@@ -47,6 +47,10 @@ class AppState extends ChangeNotifier {
     'generation.next': 'g n',
     'generation.prev': 'g p',
     'settings.open': 's o',
+    'search.projects': 'g p',
+    'search.channels': 's c',
+    'search.lyrics': 's y',
+    'search.storyboard': 's b',
   };
 
   static const Map<String, Map<String, String>> defaultShortcutMeta = {

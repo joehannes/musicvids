@@ -34,9 +34,17 @@ class ChannelProfile(BaseModel):
     language: str
     title: str
     description: str
+    overall_style: str = "cinematic"
+    channel_style: str = ""
     vibe: str
     visual_style: str
     enabled: bool = True
+
+
+class GenerationMoods(BaseModel):
+    music_mood: str = "cinematic, inspiring"
+    image_mood: str = "photorealistic, cinematic"
+    video_mood: str = "smooth transitions, dynamic"
 
 
 class ProjectConfig(BaseModel):
@@ -44,6 +52,7 @@ class ProjectConfig(BaseModel):
     root_path: Path
     lyrics: dict[str, dict[str, Any]] = Field(default_factory=dict)
     channels: list[ChannelProfile] = Field(default_factory=list)
+    generation_moods: GenerationMoods = Field(default_factory=GenerationMoods)
     storyboard: Storyboard = Field(default_factory=lambda: Storyboard(globalMood="cinematic", scenes=[]))
     characters: list[dict[str, Any]] = Field(default_factory=list)
 

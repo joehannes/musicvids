@@ -6,7 +6,18 @@ APP_DIR="$ROOT_DIR/app_flutter"
 BACKEND_DIR="$ROOT_DIR/backend_python"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
-VERSION="${1:-0.1.1}"
+
+# Auto-increment version: extract default, increment patch, save back
+SCRIPT_FILE="${BASH_SOURCE[0]}"
+CURRENT_DEFAULT=$(grep -oP 'VERSION_DEFAULT=\K[0-9]+\.[0-9]+\.[0-9]+' "$SCRIPT_FILE" || echo "0.1.0")
+IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_DEFAULT"
+PATCH=$((PATCH + 1))
+NEW_DEFAULT="${MAJOR}.${MINOR}.${PATCH}"
+
+# Update script with new default version
+sed -i "s/VERSION_DEFAULT=${CURRENT_DEFAULT}/VERSION_DEFAULT=${NEW_DEFAULT}/" "$SCRIPT_FILE"
+
+VERSION="${1:-$NEW_DEFAULT}"
 ARCH="amd64"
 PKG_NAME="musicvids-studio"
 PUBSPEC_VERSION="$VERSION"

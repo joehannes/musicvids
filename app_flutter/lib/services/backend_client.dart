@@ -54,6 +54,30 @@ class BackendClient {
     return jsonDecode(r.body) as Map<String, dynamic>;
   }
 
+  Future<Map<String, dynamic>> generateSongs(String projectName, {List<String>? channelIds}) async {
+    var url = '$baseUrl/workflow/suno/$projectName';
+    if (channelIds != null && channelIds.isNotEmpty) {
+      url += '?channel_ids=${channelIds.join(",")}';
+    }
+    final r = await http.post(Uri.parse(url)).timeout(const Duration(seconds: 60));
+    if (r.statusCode >= 400) {
+      throw Exception('suno generation failed');
+    }
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
+  Future<Map<String, dynamic>> generateImages(String projectName, {List<String>? channelIds}) async {
+    var url = '$baseUrl/workflow/midjourney/$projectName';
+    if (channelIds != null && channelIds.isNotEmpty) {
+      url += '?channel_ids=${channelIds.join(",")}';
+    }
+    final r = await http.post(Uri.parse(url)).timeout(const Duration(seconds: 120));
+    if (r.statusCode >= 400) {
+      throw Exception('midjourney generation failed');
+    }
+    return jsonDecode(r.body) as Map<String, dynamic>;
+  }
+
   Future<Map<String, dynamic>> getSettings() async {
     final r = await http.get(Uri.parse('$baseUrl/settings')).timeout(const Duration(seconds: 8));
     if (r.statusCode >= 400) return {};

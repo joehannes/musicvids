@@ -1,13 +1,18 @@
 import 'dart:async';
 import 'dart:convert';
+import 'dart:io';
 
+import 'package:file_picker/file_picker.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
+import 'package:http/http.dart' as http;
 import 'package:provider/provider.dart';
+import 'package:url_launcher/url_launcher.dart';
 
 import '../state/app_state.dart';
 import '../widgets/list_popup.dart';
 import '../widgets/settings_dialog.dart';
+import '../widgets/touch_shortcuts_guide.dart';
 
 class DashboardScreen extends StatefulWidget {
   const DashboardScreen({super.key});
@@ -54,6 +59,17 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Timer? _mnemonicTimer;
   bool _mnemonicFailed = false;
   bool _globalKeyHandlerRegistered = false;
+  bool _youtubeGridView = true;
+  Map<int, bool> _expandedChannels = {};
+  final TextEditingController _youtubeSearchController = TextEditingController();
+  final FocusNode _youtubeSearchFocus = FocusNode();
+  int _selectedChannelIndex = 0;
+  final TextEditingController _projectsSearchController = TextEditingController();
+  final FocusNode _projectsSearchFocus = FocusNode();
+  int _selectedProjectIndex = 0;
+  Timer? _autosaveTimer;
+  static const Duration _autosaveDebounceDuration = Duration(milliseconds: 500);
+  bool _showTouchGuide = true;
 
   @override
   void initState() {
@@ -71,8 +87,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
   @override
   void dispose() {
     _mnemonicTimer?.cancel();
+    _autosaveTimer?.cancel();
     _newProjectController.dispose();
     _keyboardFocus.dispose();
+    _youtubeSearchController.dispose();
+    _youtubeSearchFocus.dispose();
+    _projectsSearchController.dispose();
+    _projectsSearchFocus.dispose();
     if (_globalKeyHandlerRegistered) {
       HardwareKeyboard.instance.removeHandler(_globalKeyHandler);
       _globalKeyHandlerRegistered = false;
@@ -85,24 +106,42 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final state = context.watch<AppState>();
     return Scaffold(
       appBar: null,
-      floatingActionButton: FloatingActionButton.small(
-        onPressed: () => _openSettings(state),
-        tooltip: 'Settings (s o)',
-        shape: const CircleBorder(),
-        child: const Icon(Icons.settings),
-      ),
-      floatingActionButtonLocation: FloatingActionButtonLocation.endTop,
       body: SafeArea(
         child: Focus(
           autofocus: true,
           focusNode: _keyboardFocus,
           child: Stack(
             children: [
-              _buildCanvas(state),
+              Positioned.fill(
+                top: 56, // Leave space for taskbar
+                child: _buildCanvas(state),
+              ),
+              // Fixed top taskbar
+              Positioned(
+                top: 0,
+                left: 0,
+                right: 0,
+                height: 56,
+                child: _buildFixedTaskbar(state),
+              ),
               if (_mnemonicMode) _buildMnemonicGuide(state),
+              if (_showTouchGuide)
+                TouchShortcutsGuide(
+                  state: state,
+                  onActionExecuted: (actionKey) async {
+                    await _executeMnemonicAction(state, actionKey);
+                    setState(() => _showTouchGuide = false);
+                    // Re-enable after short delay for UX
+                    await Future.delayed(const Duration(milliseconds: 500));
+                    if (mounted) {
+                      setState(() => _showTouchGuide = true);
+                    }
+                  },
+                  onClose: () => setState(() => _showTouchGuide = false),
+                ),
               if (state.loading)
-                const Positioned(
-                  top: 8,
+                Positioned(
+                  top: 56,
                   left: 0,
                   right: 0,
                   child: LinearProgressIndicator(minHeight: 3),
@@ -122,6 +161,278 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return _onKeyEvent(state, event) == KeyEventResult.handled;
   }
 
+  Widget _buildFixedTaskbar(AppState state) {
+    final currentScreen = _screens.firstWhere((s) => s.id == _activeScreenId);
+    
+    return Container(
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).colorScheme.outline.withOpacity(0.2),
+            width: 1,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          // Screen selector dropdown (left side)
+          Tooltip(
+            message: 'Select View/Screen',
+            child: PopupMenuButton<String>(
+              tooltip: '',
+              icon: Row(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  Icon(currentScreen.icon, size: 18),
+                  const SizedBox(width: 4),
+                  Icon(Icons.arrow_drop_down, size: 18),
+                ],
+              ),
+              onSelected: (screenId) => _setActiveScreen(screenId),
+              itemBuilder: (context) => _screens
+                  .map((screen) => PopupMenuItem(
+                        value: screen.id,
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(screen.icon, size: 18),
+                            const SizedBox(width: 12),
+                            Text(screen.label),
+                          ],
+                        ),
+                      ))
+                  .toList(),
+            ),
+          ),
+          const SizedBox(width: 8),
+          Text(
+            currentScreen.label,
+            style: Theme.of(context).textTheme.titleSmall,
+          ),
+          const SizedBox(width: 16),
+          
+          // Separator
+          Container(
+            height: 24,
+            width: 1,
+            color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
+          ),
+          const SizedBox(width: 8),
+          
+          // Screen-specific actions (icon-only, center expands)
+          Expanded(
+            child: Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 8),
+              child: SingleChildScrollView(
+                scrollDirection: Axis.horizontal,
+                child: _buildContextualActions(state),
+              ),
+            ),
+          ),
+          
+          // Touch guide toggle on far right
+          Tooltip(
+            message: 'Toggle Shortcuts Guide',
+            child: IconButton(
+              iconSize: 18,
+              visualDensity: VisualDensity.compact,
+              icon: const Icon(Icons.lightbulb),
+              onPressed: () => setState(() => _showTouchGuide = !_showTouchGuide),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildContextualActions(AppState state) {
+    switch (_activeScreenId) {
+      case 'dashboard':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Create Project', Icons.add_box, () {
+              var hasProject = state.activeProject != null;
+              if (hasProject) return;
+              _showQuickCreateProjectDialog(state);
+            }),
+            _iconButton('Save Project', Icons.save, () => state.saveActiveProject()),
+            _iconButton('Refresh', Icons.refresh, () => state.bootstrap()),
+            _iconButton('Help', Icons.help_outline, () => _startMnemonicMode()),
+          ],
+        );
+      case 'projects':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('New Project', Icons.add_box, () => _showQuickCreateProjectDialog(state)),
+            _iconButton('Load Selected', Icons.folder_open, () async {
+              final project = _projectsSearchController.text.trim().isEmpty
+                  ? state.projects.firstOrNull
+                  : state.projects.where((p) => _fuzzyMatch(p, _projectsSearchController.text)).firstOrNull;
+              if (project != null) {
+                await state.loadProject(project);
+                _showSnack('Loaded: $project');
+              }
+            }),
+            _iconButton('Refresh', Icons.refresh, () => state.refreshProjects()),
+            _iconButton('Export Full Project', Icons.download, () => _exportFullProject(state)),
+            _iconButton('Import Full Project', Icons.upload, () => _importFullProject(state)),
+            _iconButton('Save', Icons.save, () => state.saveActiveProject()),
+          ],
+        );
+      case 'lyrics':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Add Section', Icons.add, () => _addLyricSection(state)),
+            _iconButton('Delete Last', Icons.delete, () => _deleteLastLyricSection(state)),
+            _iconButton('Next Chapter', Icons.skip_next, () => state.nextEpisode()),
+            _iconButton('Previous Chapter', Icons.skip_previous, () => state.previousEpisode()),
+            _iconButton('Export Lyrics', Icons.download, () => _exportLyrics(state)),
+            _iconButton('Import Lyrics', Icons.upload, () => _importLyrics(state)),
+            _iconButton('Save', Icons.save, () => state.saveActiveProject()),
+          ],
+        );
+      case 'channels':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Add Manual', Icons.add, () => _showAddChannelDialog(state)),
+            _iconButton('Generate Pattern', Icons.functions, () => _showBatchChannelDialog(state)),
+            _iconButton('Test Connection', Icons.check_circle, () => _testOAuthConnection(state)),
+            _iconButton('Sync All', Icons.sync, () => _syncAllChannels(state)),
+            _iconButton('Export Channels', Icons.download, () => _exportChannels(state)),
+            _iconButton('Import Channels', Icons.upload, () => _importChannels(state)),
+            _iconButton('Select All', Icons.select_all, () => _selectAllChannels(state)),
+            _iconButton('Deselect All', Icons.deselect, () => _deselectAllChannels(state)),
+          ],
+        );
+      case 'storyboard':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Add Scene', Icons.add, () => _addScene(state)),
+            _iconButton('Delete Last', Icons.delete, () => _deleteLastScene(state)),
+            _iconButton('Clear All', Icons.delete_sweep, () => _clearAllScenes(state)),
+            _iconButton('Export Storyboard', Icons.download, () => _exportStoryboard(state)),
+            _iconButton('Import Storyboard', Icons.upload, () => _importStoryboard(state)),
+            _iconButton('Save', Icons.save, () => state.saveActiveProject()),
+          ],
+        );
+      case 'characters':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Add Character', Icons.person_add, () => _addCharacter(state)),
+            _iconButton('Delete Last', Icons.person_remove, () => _deleteLastCharacter(state)),
+            _iconButton('Clear All', Icons.delete_sweep, () => _clearAllCharacters(state)),
+            _iconButton('Export Characters', Icons.download, () => _exportCharacters(state)),
+            _iconButton('Import Characters', Icons.upload, () => _importCharacters(state)),
+            _iconButton('Save', Icons.save, () => state.saveActiveProject()),
+          ],
+        );
+      case 'generation':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Run Workflow', Icons.play_circle, () => state.runWorkflow()),
+            _iconButton('Next Episode', Icons.skip_next, () => state.nextEpisode()),
+            _iconButton('Previous Episode', Icons.skip_previous, () => state.previousEpisode()),
+            if (state.lastWorkflowReport != null)
+              _iconButton('Report Available', Icons.assessment, () {
+                _showSnack('Workflow Report Generated - see below');
+              }),
+          ],
+        );
+      case 'preview':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Refresh Preview', Icons.refresh, () => setState(() {})),
+            _iconButton('Export Preview', Icons.download, () => _showSnack('Export preview feature coming soon')),
+            _iconButton('Share', Icons.share, () => _showSnack('Share feature coming soon')),
+          ],
+        );
+      case 'upload':
+        return Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            _iconButton('Upload Video', Icons.cloud_upload, () => _showSnack('Upload workflow coming soon')),
+            _iconButton('Schedule Upload', Icons.schedule, () => _showSnack('Schedule feature coming soon')),
+            _iconButton('Batch Upload', Icons.upload_file, () => _showSnack('Batch upload coming soon')),
+            _iconButton('Check Status', Icons.info, () => _showSnack('Status check coming soon')),
+          ],
+        );
+      default:
+        return const SizedBox.shrink();
+    }
+  }
+
+  Widget _iconButton(String tooltip, IconData icon, VoidCallback onPressed) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 2),
+      child: Tooltip(
+        message: tooltip,
+        child: IconButton(
+          iconSize: 18,
+          visualDensity: VisualDensity.compact,
+          icon: Icon(icon),
+          onPressed: onPressed,
+        ),
+      ),
+    );
+  }
+
+  void _deleteLastScene(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final storyboard = (project['storyboard'] as Map<String, dynamic>? ?? {'globalMood': '', 'scenes': []});
+    final scenes = (storyboard['scenes'] as List?)?.cast<Map>() ?? [];
+    if (scenes.isNotEmpty) {
+      scenes.removeLast();
+      storyboard['scenes'] = scenes;
+      project['storyboard'] = storyboard;
+      state.touch();
+      _scheduleAutosave(state);
+      _showSnack('Scene deleted.');
+    }
+  }
+
+  void _clearAllScenes(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final storyboard = (project['storyboard'] as Map<String, dynamic>? ?? {'globalMood': '', 'scenes': []});
+    storyboard['scenes'] = [];
+    project['storyboard'] = storyboard;
+    state.touch();
+    _scheduleAutosave(state);
+    _showSnack('All scenes cleared.');
+  }
+
+  void _deleteLastCharacter(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final characters = (project['characters'] as List?)?.cast<Map>() ?? [];
+    if (characters.isNotEmpty) {
+      characters.removeLast();
+      project['characters'] = characters;
+      state.touch();
+      _scheduleAutosave(state);
+      _showSnack('Character deleted.');
+    }
+  }
+
+  void _clearAllCharacters(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    project['characters'] = [];
+    state.touch();
+    _scheduleAutosave(state);
+    _showSnack('All characters cleared.');
+  }
+
   KeyEventResult _onKeyEvent(AppState state, KeyEvent event) {
     if (event is! KeyDownEvent) {
       return KeyEventResult.ignored;
@@ -131,7 +442,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final keyLabel = key.keyLabel.toLowerCase();
     final textFieldFocused = _isTextFieldFocused();
 
-    // Disable all mnemonic shortcuts when a text field is focused
+    // Allow ESC to work even when text field is focused (to unfocus/exit)
+    if (key == LogicalKeyboardKey.escape) {
+      if (textFieldFocused) {
+        // Unfocus the text field
+        _keyboardFocus.requestFocus();
+        return KeyEventResult.handled;
+      }
+      if (_mnemonicMode) {
+        _cancelMnemonic();
+        return KeyEventResult.handled;
+      }
+    }
+
+    // Disable ALL mnemonic shortcuts when a text field is focused
     if (textFieldFocused) {
       return KeyEventResult.ignored;
     }
@@ -147,10 +471,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     if (_mnemonicMode) {
-      if (key == LogicalKeyboardKey.escape) {
-        _cancelMnemonic();
-        return KeyEventResult.handled;
-      }
       if (key == LogicalKeyboardKey.backspace) {
         if (_mnemonicSequence.isNotEmpty) {
           final parts = _mnemonicSequence.split(' ');
@@ -181,13 +501,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final viewport = MediaQuery.sizeOf(context);
     final pan = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
     final notes = _screenNotes[_activeScreenId] ?? <_CanvasNote>[];
+
     return GestureDetector(
       onPanUpdate: (details) {
         setState(() {
           _screenPanOffsets[_activeScreenId] = pan + details.delta;
         });
       },
-      child: ClipRect(
+      child: ScrollConfiguration(
+        behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: Stack(
           children: [
             Positioned.fill(
@@ -195,11 +517,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
             Transform.translate(
               offset: pan,
-              child: SizedBox(
-                width: viewport.width,
-                height: viewport.height,
-                child: _pageForScreen(_activeScreenId, state),
-              ),
+              child: _pageForScreen(_activeScreenId, state),
             ),
             ...notes.map((note) => Positioned(
                   left: viewport.width / 2 + note.position.dx + pan.dx,
@@ -227,6 +545,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
       ),
     );
+  }
+
+  String _getCategoryFirstLetter(String category, AppState state) {
+    // Find first shortcut that belongs to this category and get its first letter
+    for (final entry in state.shortcutBindings.entries) {
+      final meta = state.shortcutMeta[entry.key];
+      if (meta?['category'] == category) {
+        final sequence = entry.value.trim();
+        if (sequence.isNotEmpty) {
+          return sequence.split(' ').first.toUpperCase();
+        }
+      }
+    }
+    // Fallback: return first letter of category
+    return category.isNotEmpty ? category[0].toUpperCase() : '?';
   }
 
   Widget _buildMnemonicGuide(AppState state) {
@@ -293,9 +626,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Show categories on initial state, shortcuts otherwise
     final isInitialState = _mnemonicSequence.isEmpty;
-    final displayItems = isInitialState
-        ? categoriesMap.entries.map((e) => {'title': e.key, 'description': '${e.value} shortcut${e.value != 1 ? 's' : ''}'}).toList()
-        : available;
+
+    final screenSize = MediaQuery.sizeOf(context);
+    final containerWidth = ((screenSize.width * 0.75).clamp(600.0, double.infinity) as double);
+    final containerHeight = ((screenSize.height * 0.75).clamp(300.0, double.infinity) as double);
 
     return Align(
       alignment: Alignment.center,
@@ -303,7 +637,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
         duration: const Duration(milliseconds: 180),
         opacity: 1,
         child: Container(
-          width: 860,
+          width: containerWidth,
+          constraints: BoxConstraints(maxHeight: containerHeight),
           padding: const EdgeInsets.all(16),
           decoration: BoxDecoration(
             borderRadius: BorderRadius.circular(16),
@@ -321,42 +656,123 @@ class _DashboardScreenState extends State<DashboardScreen> {
               const SizedBox(height: 6),
               Text(
                 isInitialState
-                    ? 'Press the first letter of a category to see shortcuts'
+                    ? 'Press the letter shown to see shortcuts in that category'
                     : (_mnemonicSequence.isEmpty ? 'Type a sequence (example: S O)' : 'Sequence: $_mnemonicSequence')
                         .replaceAll('Type a sequence', 'Continue typing or press Backspace to go back'),
                 style: Theme.of(context).textTheme.bodyMedium,
               ),
               const SizedBox(height: 10),
-              Wrap(
-                spacing: 8,
-                children: nextLetters
-                    .map((n) => Chip(
-                          label: Text(n.toUpperCase()),
-                          backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.25),
-                        ))
-                    .toList(),
-              ),
-              const SizedBox(height: 10),
+              if (!isInitialState)
+                Wrap(
+                  spacing: 8,
+                  children: nextLetters
+                      .map((n) => Chip(
+                            label: Text(n.toUpperCase()),
+                            backgroundColor: Theme.of(context).colorScheme.primary.withOpacity(0.25),
+                          ))
+                      .toList(),
+                ),
+              if (!isInitialState) const SizedBox(height: 10),
               MouseRegion(
                 child: ScrollConfiguration(
                   behavior: ScrollConfiguration.of(context).copyWith(
                     scrollbars: true,
                   ),
                   child: SizedBox(
-                    height: 360,
+                    height: isInitialState ? (containerHeight * 0.5).clamp(180, 300) : (containerHeight * 0.6).clamp(300, double.infinity),
                     child: Scrollbar(
                       thumbVisibility: true,
-                      child: ListView(
-                        children: displayItems
-                            .map((e) => ListTile(
-                                  dense: true,
-                                  visualDensity: VisualDensity.compact,
-                                  title: Text(e['title'] ?? ''),
-                                  subtitle: Text(e['description'] ?? ''),
-                                  trailing: Text((e['sequence'] ?? '').toUpperCase()),
-                                ))
-                            .toList(),
-                      ),
+                      child: isInitialState
+                          ? GridView.count(
+                              crossAxisCount: 4,
+                              mainAxisSpacing: 4,
+                              crossAxisSpacing: 8,
+                              childAspectRatio: 2.8,
+                              children: categoriesMap.entries
+                                  .map((e) {
+                                    final firstLetter = _getCategoryFirstLetter(e.key, state);
+                                    return Card(
+                                      color: Theme.of(context).colorScheme.surfaceVariant.withOpacity(0.4),
+                                      child: InkWell(
+                                        onTap: () {
+                                          // Simulate typing the first letter
+                                          setState(() {
+                                            _mnemonicSequence = firstLetter.toLowerCase();
+                                          });
+                                        },
+                                        child: Padding(
+                                          padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 2),
+                                          child: Row(
+                                            children: [
+                                              Container(
+                                                width: 32,
+                                                height: 32,
+                                                decoration: BoxDecoration(
+                                                  shape: BoxShape.circle,
+                                                  color: Theme.of(context).colorScheme.primary.withOpacity(0.3),
+                                                  border: Border.all(
+                                                    color: Theme.of(context).colorScheme.primary,
+                                                    width: 1.5,
+                                                  ),
+                                                ),
+                                                child: Center(
+                                                  child: Text(
+                                                    firstLetter,
+                                                    style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                                                          fontWeight: FontWeight.bold,
+                                                          color: Theme.of(context).colorScheme.primary,
+                                                        ),
+                                                  ),
+                                                ),
+                                              ),
+                                              const SizedBox(width: 6),
+                                              Expanded(
+                                                child: Column(
+                                                  mainAxisAlignment: MainAxisAlignment.center,
+                                                  crossAxisAlignment: CrossAxisAlignment.start,
+                                                  children: [
+                                                    Text(
+                                                      e.key,
+                                                      textAlign: TextAlign.left,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                                                            fontWeight: FontWeight.w700,
+                                                            fontSize: 10,
+                                                          ),
+                                                    ),
+                                                    Text(
+                                                      '${e.value} item${e.value != 1 ? 's' : ''}',
+                                                      textAlign: TextAlign.left,
+                                                      maxLines: 1,
+                                                      overflow: TextOverflow.ellipsis,
+                                                      style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                                                            color: Colors.grey[500],
+                                                            fontSize: 8,
+                                                          ),
+                                                    ),
+                                                  ],
+                                                ),
+                                              ),
+                                            ],
+                                          ),
+                                        ),
+                                      ),
+                                    );
+                                  })
+                                  .toList(),
+                            )
+                          : ListView(
+                              children: available
+                                  .map((e) => ListTile(
+                                        dense: true,
+                                        visualDensity: VisualDensity.compact,
+                                        title: Text(e['title'] ?? ''),
+                                        subtitle: Text(e['description'] ?? ''),
+                                        trailing: Text((e['sequence'] ?? '').toUpperCase()),
+                                      ))
+                                  .toList(),
+                            ),
                     ),
                   ),
                 ),
@@ -443,6 +859,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _mnemonicTimer?.cancel();
   }
 
+  Future<void> _executeMnemonicAction(AppState state, String actionKey) async {
+    await _runAction(actionKey, state);
+  }
+
   Future<void> _resolveMnemonicSequence(AppState state) async {
     final action = state.shortcutBindings.entries
         .firstWhere((entry) => entry.value.trim() == _mnemonicSequence.trim(), orElse: () => const MapEntry('', ''))
@@ -485,6 +905,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _runAction(String action, AppState state) async {
+    // Map action prefixes to their primary screen
+    final actionToScreen = <String, String>{
+      'lyrics.': 'lyrics',
+      'channel.': 'channels',
+      'storyboard.': 'storyboard',
+      'character.': 'characters',
+      'generation.': 'generation',
+    };
+
+    // Check if this action requires navigation to a specific screen
+    String? targetScreen;
+    for (final entry in actionToScreen.entries) {
+      if (action.startsWith(entry.key)) {
+        targetScreen = entry.value;
+        break;
+      }
+    }
+
+    // Navigate to the screen first if needed
+    if (targetScreen != null && _activeScreenId != targetScreen) {
+      _setActiveScreen(targetScreen);
+      // Small delay to ensure screen is rendered before executing action
+      await Future<void>.delayed(const Duration(milliseconds: 100));
+    }
+
     switch (action) {
       case 'navigate.left':
         _moveScreen(-1, 0);
@@ -592,6 +1037,26 @@ class _DashboardScreenState extends State<DashboardScreen> {
       case 'settings.open':
         await _openSettings(state);
         break;
+      case 'search.projects':
+        _activeScreenId = 'dashboard';
+        setState(() {});
+        _projectsSearchFocus.requestFocus();
+        break;
+      case 'search.channels':
+        _activeScreenId = 'dashboard';
+        setState(() {});
+        _youtubeSearchFocus.requestFocus();
+        break;
+      case 'search.lyrics':
+        _activeScreenId = 'dashboard';
+        setState(() {});
+        // Lyrics search focus will be added when implementing lyrics search
+        break;
+      case 'search.storyboard':
+        _activeScreenId = 'dashboard';
+        setState(() {});
+        // Storyboard search focus will be added when implementing storyboard search
+        break;
       default:
         _showSnack('No handler for action "$action" yet.');
     }
@@ -675,9 +1140,28 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   bool _isTextFieldFocused() {
     final focused = FocusManager.instance.primaryFocus;
-    final context = focused?.context;
-    final widget = context?.widget;
-    return widget is EditableText;
+    if (focused == null) {
+      return false;
+    }
+    
+    // Check if the focused node is associated with any text input widget
+    // by checking the context's widget hierarchy
+    BuildContext? context = focused.context;
+    if (context == null) {
+      return false;
+    }
+    
+    // Use visitAncestorElements to check for EditableText in the widget tree
+    bool foundEditableText = false;
+    context.visitAncestorElements((element) {
+      if (element.widget is EditableText) {
+        foundEditableText = true;
+        return false;
+      }
+      return true;
+    });
+    
+    return foundEditableText;
   }
 
   Future<void> _openSettings(AppState state) async {
@@ -738,7 +1222,50 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
     project['channels'] = channels;
     state.touch();
+    _scheduleAutosave(state);
     _showSnack('Channel added.');
+  }
+
+  void _selectAllChannels(AppState state) {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    int count = 0;
+    for (final ch in channels) {
+      if (ch['enabled'] != true) {
+        ch['enabled'] = true;
+        count++;
+      }
+    }
+    if (count > 0) {
+      state.touch();
+      _scheduleAutosave(state);
+      _showSnack('✓ Enabled $count channels.');
+    }
+  }
+
+  void _deselectAllChannels(AppState state) {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    int count = 0;
+    for (final ch in channels) {
+      if (ch['enabled'] != false) {
+        ch['enabled'] = false;
+        count++;
+      }
+    }
+    if (count > 0) {
+      state.touch();
+      _scheduleAutosave(state);
+      _showSnack('✓ Disabled $count channels.');
+    }
   }
 
   Future<void> _addLyricSection(AppState state) async {
@@ -871,10 +1398,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _dashboardPage(AppState state) {
     final project = state.activeProject;
-    final channels = (project?['channels'] as List?) ?? [];
-    final scenes = (project?['storyboard']?['scenes'] as List?) ?? [];
-    final characters = (project?['characters'] as List?) ?? [];
-    return ListView(
+    if (project == null) return const Center(child: Text('Load a project first.'));
+    
+    final channels = (project['channels'] as List?) ?? [];
+    final scenes = (project['storyboard']?['scenes'] as List?) ?? [];
+    final characters = (project['characters'] as List?) ?? [];
+    
+    // Get or initialize generation moods
+    final generationMoods = (project['generation_moods'] as Map?)?.cast<String, dynamic>() ?? {
+      'music_mood': 'cinematic, inspiring',
+      'image_mood': 'photorealistic, cinematic',
+      'video_mood': 'smooth transitions, dynamic',
+    };
+    project['generation_moods'] = generationMoods;
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Wrap(
           spacing: 10,
@@ -888,15 +1427,74 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _metricCard('Episode', '${state.selectedEpisodeIndex + 1}'),
           ],
         ),
-        const SizedBox(height: 12),
+        const SizedBox(height: 16),
         Card(
           child: ListTile(
             title: Text('Active project: ${state.selectedProject ?? 'None'}'),
             subtitle: const Text('Navigate through canvas via mnemonic mode (Space → keys) or h/j/k/l scroll'),
           ),
         ),
+        const SizedBox(height: 16),
+        Text('Generation Moods', style: Theme.of(context).textTheme.titleMedium),
+        const SizedBox(height: 8),
+        Card(
+          child: Padding(
+            padding: const EdgeInsets.all(12),
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  'These moods apply to all channels and generation steps for this project.',
+                  style: Theme.of(context).textTheme.bodySmall,
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  initialValue: generationMoods['music_mood']?.toString() ?? '',
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: '🎵 Music Mood (Suno)',
+                    border: OutlineInputBorder(),
+                    helperText: 'Applied to all song generation (combine with channel styles)',
+                  ),
+                  onChanged: (v) {
+                    generationMoods['music_mood'] = v;
+                    state.touch();
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  initialValue: generationMoods['image_mood']?.toString() ?? '',
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: '🖼️ Image Mood (Midjourney)',
+                    border: OutlineInputBorder(),
+                    helperText: 'Applied to all image generation',
+                  ),
+                  onChanged: (v) {
+                    generationMoods['image_mood'] = v;
+                    state.touch();
+                  },
+                ),
+                const SizedBox(height: 12),
+                TextFormField(
+                  initialValue: generationMoods['video_mood']?.toString() ?? '',
+                  maxLines: 5,
+                  decoration: const InputDecoration(
+                    labelText: '🎬 Video Mood (FFmpeg)',
+                    border: OutlineInputBorder(),
+                    helperText: 'Applied to video transitions and effects',
+                  ),
+                  onChanged: (v) {
+                    generationMoods['video_mood'] = v;
+                    state.touch();
+                  },
+                ),
+              ],
+            ),
+          ),
+        ),
+        const SizedBox(height: 16),
         if (state.lastWorkflowReport != null) ...[
-          const SizedBox(height: 12),
           Text('Last workflow report', style: Theme.of(context).textTheme.titleMedium),
           const SizedBox(height: 8),
           SelectableText(const JsonEncoder.withIndent('  ').convert(state.lastWorkflowReport)),
@@ -906,6 +1504,20 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _projectsPage(AppState state) {
+    // Filter projects based on search query
+    final searchQuery = _projectsSearchController.text.trim().toLowerCase();
+    final filteredProjects = state.projects.where((name) {
+      if (searchQuery.isEmpty) return true;
+      return _fuzzyMatch(name, searchQuery);
+    }).toList();
+
+    // Clamp selected index to filtered list
+    if (filteredProjects.isEmpty) {
+      _selectedProjectIndex = 0;
+    } else if (_selectedProjectIndex >= filteredProjects.length) {
+      _selectedProjectIndex = filteredProjects.length - 1;
+    }
+
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -923,17 +1535,78 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         const SizedBox(height: 8),
+        if (state.projects.isNotEmpty)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                controller: _projectsSearchController,
+                focusNode: _projectsSearchFocus,
+                decoration: InputDecoration(
+                  labelText: 'Search projects (fuzzy)',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _projectsSearchController.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _projectsSearchController.clear();
+                            setState(() => _selectedProjectIndex = 0);
+                          },
+                        )
+                      : null,
+                ),
+                onChanged: (value) {
+                  setState(() => _selectedProjectIndex = 0);
+                },
+              ),
+            ),
+          ),
+        const SizedBox(height: 8),
         Expanded(
           child: ListView.builder(
-            itemCount: state.projects.length,
-            itemBuilder: (_, i) {
-              final name = state.projects[i];
-              return Card(
-                child: ListTile(
-                  leading: const Icon(Icons.folder_open),
-                  title: Text(name),
-                  subtitle: Text(name == state.selectedProject ? 'Loaded' : 'Click to load'),
-                  trailing: OutlinedButton(onPressed: () => state.loadProject(name), child: const Text('Load')),
+            itemCount: filteredProjects.length,
+            itemBuilder: (_, displayIndex) {
+              final name = filteredProjects[displayIndex];
+              final isSelected = displayIndex == _selectedProjectIndex;
+              return Focus(
+                onKey: (node, event) {
+                  if (event.isKeyPressed(LogicalKeyboardKey.arrowDown)) {
+                    setState(() {
+                      if (_selectedProjectIndex < filteredProjects.length - 1) {
+                        _selectedProjectIndex++;
+                      }
+                    });
+                    return KeyEventResult.handled;
+                  } else if (event.isKeyPressed(LogicalKeyboardKey.arrowUp)) {
+                    setState(() {
+                      if (_selectedProjectIndex > 0) {
+                        _selectedProjectIndex--;
+                      }
+                    });
+                    return KeyEventResult.handled;
+                  }
+                  return KeyEventResult.ignored;
+                },
+                autofocus: isSelected,
+                child: Container(
+                  decoration: isSelected
+                      ? BoxDecoration(
+                          border: Border.all(
+                            color: Theme.of(context).colorScheme.primary,
+                            width: 2,
+                          ),
+                          borderRadius: BorderRadius.circular(4),
+                        )
+                      : null,
+                  child: Card(
+                    child: ListTile(
+                      leading: const Icon(Icons.folder_open),
+                      title: Text(name),
+                      subtitle: Text(name == state.selectedProject ? 'Loaded' : 'Click to load'),
+                      trailing: OutlinedButton(onPressed: () => state.loadProject(name), child: const Text('Load')),
+                    ),
+                  ),
                 ),
               );
             },
@@ -955,7 +1628,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final blocks = (lyrics['blocks'] as List).cast<Map<String, dynamic>>();
     final toneNotes = lyrics['tone_notes']?.toString() ?? '';
 
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Card(
           child: Padding(
@@ -1093,21 +1767,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     children: [
                       Text('Lyrics block ${index + 1}', style: Theme.of(context).textTheme.titleMedium),
                       const Spacer(),
+                      Tooltip(
+                        message: muted ? 'Block muted' : 'Block active',
+                        child: Transform.scale(
+                          scale: 0.8,
+                          child: Switch(
+                            value: !muted,
+                            onChanged: (value) {
+                              block['muted'] = !value;
+                              state.touch();
+                            },
+                          ),
+                        ),
+                      ),
+                      const SizedBox(width: 8),
                       IconButton(
                         onPressed: () {
-                          block['muted'] = !muted;
-                          state.touch();
+                          final lyricsBlocks = (lyrics['blocks'] as List);
+                          if (index < lyricsBlocks.length) {
+                            lyricsBlocks.removeAt(index);
+                            state.touch();
+                          }
                         },
-                        tooltip: muted ? 'Unmute block' : 'Mute block',
-                        icon: Icon(muted ? Icons.volume_off : Icons.volume_up),
+                        tooltip: 'Delete this block',
+                        icon: const Icon(Icons.delete_outline),
+                        iconSize: 20,
                       ),
                     ],
                   ),
                   TextFormField(
                     key: ValueKey('lyrics-$index-$currentLanguage'),
                     initialValue: texts[currentLanguage]?.toString() ?? '',
-                    maxLines: null,
-                    minLines: 2,
+                    maxLines: 7,
+                    minLines: 7,
                     decoration: InputDecoration(
                       labelText: '${currentLanguage.toUpperCase()} lyrics',
                       border: const OutlineInputBorder(),
@@ -1149,7 +1841,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final lyrics = _ensureLyricsStructure(project);
     final availableLangs = (lyrics['languages'] as List?)?.cast<String>() ?? ['en'];
 
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         // Control space for Suno generation
         _buildSunoControlSpace(state, project, availableLangs),
@@ -1160,10 +1853,58 @@ class _DashboardScreenState extends State<DashboardScreen> {
           children: [
             Text('YouTube Channels', style: Theme.of(context).textTheme.titleLarge),
             const Spacer(),
+            OutlinedButton.icon(
+              onPressed: () => _startOAuthFlow(state),
+              icon: const Icon(Icons.login),
+              label: const Text('Setup OAuth'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _testOAuthConnection(state),
+              icon: const Icon(Icons.check_circle),
+              label: const Text('Test Connection'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _syncAllChannels(state),
+              icon: const Icon(Icons.sync),
+              label: const Text('Sync All'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _exportChannels(state),
+              icon: const Icon(Icons.download),
+              label: const Text('Export'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _importChannels(state),
+              icon: const Icon(Icons.upload),
+              label: const Text('Import'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _showAddChannelDialog(state),
+              icon: const Icon(Icons.add),
+              label: const Text('Add Manual'),
+            ),
+            const SizedBox(width: 8),
+            OutlinedButton.icon(
+              onPressed: () => _showBatchChannelDialog(state),
+              icon: const Icon(Icons.functions),
+              label: const Text('Generate Pattern'),
+            ),
+            const SizedBox(width: 8),
             FilledButton.icon(
               onPressed: () => _openYouTubeChannelCreation(state),
               icon: const Icon(Icons.open_in_new),
               label: const Text('Open YouTube'),
+            ),
+            const SizedBox(width: 8),
+            FilledButton.icon(
+              onPressed: () => setState(() => _youtubeGridView = !_youtubeGridView),
+              icon: Icon(_youtubeGridView ? Icons.view_list : Icons.grid_view),
+              label: Text(_youtubeGridView ? 'List View' : 'Grid View'),
             ),
             const SizedBox(width: 8),
             FilledButton.icon(
@@ -1175,6 +1916,34 @@ class _DashboardScreenState extends State<DashboardScreen> {
         ),
         const SizedBox(height: 12),
         
+        if (channels.isNotEmpty && !_youtubeGridView)
+          Card(
+            child: Padding(
+              padding: const EdgeInsets.all(12),
+              child: TextField(
+                controller: _youtubeSearchController,
+                focusNode: _youtubeSearchFocus,
+                decoration: InputDecoration(
+                  labelText: 'Search channels (fuzzy)',
+                  border: const OutlineInputBorder(),
+                  prefixIcon: const Icon(Icons.search),
+                  suffixIcon: _youtubeSearchController.text.isNotEmpty
+                      ? IconButton(
+                          icon: const Icon(Icons.clear),
+                          onPressed: () {
+                            _youtubeSearchController.clear();
+                            setState(() => _selectedChannelIndex = 0);
+                          },
+                        )
+                      : null,
+                ),
+                onChanged: (value) {
+                  setState(() => _selectedChannelIndex = 0);
+                },
+              ),
+            ),
+          ),
+        
         if (channels.isEmpty)
           Card(
             child: Padding(
@@ -1183,129 +1952,365 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
         
-        // Channels list
-        ...channels.asMap().entries.map((e) {
-          final index = e.key;
-          final raw = e.value;
-          final ch = raw.cast<String, dynamic>();
-          final isEnabled = ch['enabled'] ?? true;
-          final channelLang = ch['language']?.toString() ?? 'en';
-          final isLanguageMuted = !availableLangs.contains(channelLang);
+        // Channels grid or list view
+        if (_youtubeGridView)
+          _buildYoutubeChannelsGrid(state, project, channels, availableLangs)
+        else
+          ..._buildYoutubeChannelsListFiltered(state, project, channels, availableLangs),
+      ],
+    );
+  }
 
-          return Card(
+  Widget _buildYoutubeChannelsGrid(AppState state, Map<String, dynamic> project, List<dynamic> channels, List<String> availableLangs) {
+    return Wrap(
+      spacing: 16,
+      runSpacing: 16,
+      children: channels.asMap().entries.map((e) {
+        final index = e.key;
+        final raw = e.value;
+        final ch = raw.cast<String, dynamic>();
+        final isEnabled = ch['enabled'] ?? true;
+        final channelLang = ch['language']?.toString() ?? 'en';
+        final isLanguageMuted = !availableLangs.contains(channelLang);
+        final isExpanded = _expandedChannels[index] ?? false;
+
+        return SizedBox(
+          width: 320,
+          child: Card(
             color: isLanguageMuted ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
             child: Padding(
               padding: const EdgeInsets.all(12),
-              child: Column(
-                crossAxisAlignment: CrossAxisAlignment.start,
-                children: [
-                  // Header with enable toggle and channel ID
-                  Row(
-                    children: [
-                      Checkbox(
-                        value: isEnabled,
-                        onChanged: (v) {
-                          if (v != null) {
-                            ch['enabled'] = v;
-                            state.touch();
-                          }
-                        },
-                      ),
-                      Expanded(
-                        child: TextFormField(
-                          initialValue: ch['channel_id']?.toString(),
-                          decoration: const InputDecoration(
-                            labelText: 'Channel ID',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => ch['channel_id'] = v,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      OutlinedButton.icon(
-                        onPressed: () => _deleteChannel(state, index),
-                        icon: const Icon(Icons.delete),
-                        label: const Text('Delete'),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  // Language field with available languages
-                  Opacity(
-                    opacity: isLanguageMuted ? 0.6 : 1.0,
-                    child: Tooltip(
-                      message: isLanguageMuted
-                          ? 'This language is not used in the lyrics section. Add it to lyrics first.'
-                          : 'Language used for content generation',
-                      child: DropdownButtonFormField<String>(
-                        value: channelLang,
-                        items: availableLangs
-                            .map((lang) => DropdownMenuItem(
-                                  value: lang,
-                                  child: Text(lang.toUpperCase()),
-                                ))
-                            .toList(),
-                        onChanged: isLanguageMuted
-                            ? null
-                            : (v) {
+              child: isExpanded
+                  ? _buildYoutubeChannelExpandedContent(state, index, ch, isEnabled, channelLang, isLanguageMuted, availableLangs)
+                  : Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        // Compact grid view
+                        Row(
+                          children: [
+                            Checkbox(
+                              value: isEnabled,
+                              onChanged: (v) {
                                 if (v != null) {
-                                  ch['language'] = v;
+                                  ch['enabled'] = v;
                                   state.touch();
                                 }
                               },
-                        decoration: InputDecoration(
-                          labelText: 'Language',
-                          border: const OutlineInputBorder(),
-                          helperText: isLanguageMuted ? 'Not defined in lyrics' : null,
+                            ),
+                            Expanded(
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Text(
+                                    ch['title']?.toString() ?? 'Untitled',
+                                    style: Theme.of(context).textTheme.titleSmall,
+                                    overflow: TextOverflow.ellipsis,
+                                  ),
+                                  Text(
+                                    'Language: ${channelLang.toUpperCase()}',
+                                    style: Theme.of(context).textTheme.bodySmall,
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ],
                         ),
-                      ),
+                        const SizedBox(height: 12),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+                          children: [
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => setState(() => _expandedChannels[index] = true),
+                                icon: const Icon(Icons.edit, size: 16),
+                                label: const Text('Edit'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => _syncChannel(state, ch),
+                                icon: const Icon(Icons.sync, size: 16),
+                                label: const Text('Sync'),
+                              ),
+                            ),
+                            const SizedBox(width: 8),
+                            Expanded(
+                              child: OutlinedButton.icon(
+                                onPressed: () => _deleteChannel(state, index),
+                                icon: const Icon(Icons.delete, size: 16),
+                                label: const Text('Delete'),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+            ),
+          ),
+        );
+      }).toList(),
+    );
+  }
+
+  bool _fuzzyMatch(String text, String pattern) {
+    final textLower = text.toLowerCase();
+    final patternLower = pattern.toLowerCase();
+    
+    int patternIndex = 0;
+    for (int i = 0; i < textLower.length && patternIndex < patternLower.length; i++) {
+      if (textLower[i] == patternLower[patternIndex]) {
+        patternIndex++;
+      }
+    }
+    return patternIndex == patternLower.length;
+  }
+
+  void _scheduleAutosave(AppState state) {
+    _autosaveTimer?.cancel();
+    _autosaveTimer = Timer(_autosaveDebounceDuration, () async {
+      if (state.activeProject != null && state.selectedProject != null) {
+        try {
+          await state.saveActiveProject();
+          debugPrint('✓ Autosave OK: ${state.selectedProject}');
+        } catch (e) {
+          debugPrint('❌ Autosave FAILED for ${state.selectedProject}: $e');
+          _showSnack('⚠️ Autosave failed: $e. Try clicking Save again.');
+        }
+      } else {
+        debugPrint('⚠️ Autosave skipped: activeProject=${state.activeProject != null}, selectedProject=${state.selectedProject}');
+      }
+    });
+  }
+
+  List<Widget> _buildYoutubeChannelsListFiltered(AppState state, Map<String, dynamic> project, List<dynamic> channels, List<String> availableLangs) {
+    final searchQuery = _youtubeSearchController.text.trim();
+    
+    // Filter channels based on search query
+    final filteredIndices = <int>[];
+    for (int i = 0; i < channels.length; i++) {
+      final ch = (channels[i] as Map).cast<String, dynamic>();
+      final channelId = ch['channel_id']?.toString() ?? '';
+      
+      if (searchQuery.isEmpty || _fuzzyMatch(channelId, searchQuery)) {
+        filteredIndices.add(i);
+      }
+    }
+    
+    // Clamp selected index to filtered list
+    if (filteredIndices.isEmpty) {
+      _selectedChannelIndex = 0;
+    } else if (_selectedChannelIndex >= filteredIndices.length) {
+      _selectedChannelIndex = filteredIndices.length - 1;
+    }
+    
+    return filteredIndices.asMap().entries.map((entry) {
+      final displayIndex = entry.key;
+      final originalIndex = entry.value;
+      final isSelected = displayIndex == _selectedChannelIndex;
+      
+      final raw = channels[originalIndex];
+      final ch = raw.cast<String, dynamic>();
+      final isEnabled = ch['enabled'] ?? true;
+      final channelLang = ch['language']?.toString() ?? 'en';
+      final isLanguageMuted = !availableLangs.contains(channelLang);
+      
+      return Focus(
+        onKey: (node, event) {
+          if (event.isKeyPressed(LogicalKeyboardKey.arrowDown)) {
+            setState(() {
+              if (_selectedChannelIndex < filteredIndices.length - 1) {
+                _selectedChannelIndex++;
+              }
+            });
+            return KeyEventResult.handled;
+          } else if (event.isKeyPressed(LogicalKeyboardKey.arrowUp)) {
+            setState(() {
+              if (_selectedChannelIndex > 0) {
+                _selectedChannelIndex--;
+              }
+            });
+            return KeyEventResult.handled;
+          }
+          return KeyEventResult.ignored;
+        },
+        autofocus: isSelected,
+        child: Container(
+          decoration: isSelected
+              ? BoxDecoration(
+                  border: Border.all(
+                    color: Theme.of(context).colorScheme.primary,
+                    width: 2,
+                  ),
+                  borderRadius: BorderRadius.circular(4),
+                )
+              : null,
+          child: _buildYoutubeChannelCard(state, originalIndex, ch, isEnabled, channelLang, isLanguageMuted, availableLangs),
+        ),
+      );
+    }).toList();
+  }
+
+  List<Widget> _buildYoutubeChannelsList(AppState state, Map<String, dynamic> project, List<dynamic> channels, List<String> availableLangs) {
+    return channels.asMap().entries.map((e) {
+      final index = e.key;
+      final raw = e.value;
+      final ch = raw.cast<String, dynamic>();
+      final isEnabled = ch['enabled'] ?? true;
+      final channelLang = ch['language']?.toString() ?? 'en';
+      final isLanguageMuted = !availableLangs.contains(channelLang);
+      return _buildYoutubeChannelCard(state, index, ch, isEnabled, channelLang, isLanguageMuted, availableLangs);
+    }).toList();
+  }
+
+  Widget _buildYoutubeChannelCard(AppState state, int index, Map<String, dynamic> ch, bool isEnabled, String channelLang, bool isLanguageMuted, List<String> availableLangs) {
+    return Card(
+      color: isLanguageMuted ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
+      child: Padding(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            // Header with enable toggle, channel ID, and action buttons
+            Row(
+              children: [
+                Checkbox(
+                  value: isEnabled,
+                  onChanged: (v) {
+                    if (v != null) {
+                      ch['enabled'] = v;
+                      state.touch();
+                      _scheduleAutosave(state);
+                    }
+                  },
+                ),
+                Expanded(
+                  child: TextFormField(
+                    initialValue: ch['channel_id']?.toString(),
+                    decoration: const InputDecoration(
+                      labelText: 'Channel ID',
+                      border: OutlineInputBorder(),
+                      contentPadding: EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    ),
+                    onChanged: (v) {
+                      ch['channel_id'] = v;
+                      _scheduleAutosave(state);
+                    },
+                  ),
+                ),
+                const SizedBox(width: 4),
+                Tooltip(
+                  message: 'Sync Channel',
+                  child: IconButton(
+                    iconSize: 18,
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.sync),
+                    onPressed: () => _syncChannel(state, ch),
+                  ),
+                ),
+                Tooltip(
+                  message: 'Delete Channel',
+                  child: IconButton(
+                    iconSize: 18,
+                    visualDensity: VisualDensity.compact,
+                    icon: const Icon(Icons.delete),
+                    onPressed: () => _deleteChannel(state, index),
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            
+            // Language field (code only) with available languages
+            Opacity(
+              opacity: isLanguageMuted ? 0.6 : 1.0,
+              child: SizedBox(
+                width: 120,
+                child: Tooltip(
+                  message: isLanguageMuted
+                      ? 'This language is not used in the lyrics section. Add it to lyrics first.'
+                      : 'Language used for content generation',
+                  child: DropdownButtonFormField<String>(
+                    value: channelLang,
+                    items: availableLangs
+                        .map((lang) => DropdownMenuItem(
+                              value: lang,
+                              child: Text(lang.toUpperCase()),
+                            ))
+                        .toList(),
+                    onChanged: isLanguageMuted
+                        ? null
+                        : (v) {
+                            if (v != null) {
+                              ch['language'] = v;
+                              state.touch();
+                              _scheduleAutosave(state);
+                            }
+                          },
+                    decoration: InputDecoration(
+                      hintText: 'Language',
+                      border: const OutlineInputBorder(),
+                      contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                      isDense: true,
+                      helperText: isLanguageMuted ? 'Not defined' : null,
                     ),
                   ),
-                  const SizedBox(height: 12),
-                  
-                  // Basic channel info
-                  Row(
-                    children: [
-                      Expanded(
-                        child: TextFormField(
-                          initialValue: ch['title']?.toString(),
-                          decoration: const InputDecoration(
-                            labelText: 'Channel Title',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => ch['title'] = v,
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      Expanded(
-                        child: TextFormField(
-                          initialValue: ch['handle']?.toString(),
-                          decoration: const InputDecoration(
-                            labelText: 'Channel Handle (@username)',
-                            border: OutlineInputBorder(),
-                          ),
-                          onChanged: (v) => ch['handle'] = v,
-                        ),
-                      ),
-                    ],
-                  ),
-                  const SizedBox(height: 12),
-                  
-                  // Description
-                  TextFormField(
-                    initialValue: ch['description']?.toString(),
+                ),
+              ),
+            ),
+            const SizedBox(height: 12),
+            
+            // Basic channel info
+            Row(
+              children: [
+                Expanded(
+                  child: TextFormField(
+                    initialValue: ch['title']?.toString(),
                     decoration: const InputDecoration(
-                      labelText: 'Channel Description',
+                      labelText: 'Channel Title',
                       border: OutlineInputBorder(),
                     ),
-                    maxLines: 2,
-                    onChanged: (v) => ch['description'] = v,
+                    onChanged: (v) {
+                      ch['title'] = v;
+                      _scheduleAutosave(state);
+                    },
                   ),
-                  const SizedBox(height: 12),
-                  
-                  // Keywords and tags
-                  Row(
+                ),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: TextFormField(
+                    initialValue: ch['handle']?.toString(),
+                    decoration: const InputDecoration(
+                      labelText: 'Channel Handle (@username)',
+                      border: OutlineInputBorder(),
+                    ),
+                    onChanged: (v) {
+                      ch['handle'] = v;
+                      _scheduleAutosave(state);
+                    },
+                  ),
+                ),
+              ],
+            ),
+            const SizedBox(height: 12),
+            
+            // Description
+            TextFormField(
+              initialValue: ch['description']?.toString(),
+              decoration: const InputDecoration(
+                labelText: 'Channel Description',
+                border: OutlineInputBorder(),
+              ),
+              maxLines: 2,
+              onChanged: (v) {
+                ch['description'] = v;
+                _scheduleAutosave(state);
+              },
+            ),
+            const SizedBox(height: 12),
+            
+            // Keywords and tags
+            Row(
                     children: [
                       Expanded(
                         child: TextFormField(
@@ -1314,7 +2319,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             labelText: 'Keywords (comma-separated)',
                             border: OutlineInputBorder(),
                           ),
-                          onChanged: (v) => ch['keywords'] = v,
+                          onChanged: (v) {
+                            ch['keywords'] = v;
+                            _scheduleAutosave(state);
+                          },
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1325,7 +2333,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             labelText: 'Brand Category',
                             border: OutlineInputBorder(),
                           ),
-                          onChanged: (v) => ch['brand_category'] = v,
+                          onChanged: (v) {
+                            ch['brand_category'] = v;
+                            _scheduleAutosave(state);
+                          },
                         ),
                       ),
                     ],
@@ -1345,7 +2356,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             border: OutlineInputBorder(),
                             helperText: 'e.g., cinematic, documentary, artistic',
                           ),
-                          onChanged: (v) => ch['overall_style'] = v,
+                          onChanged: (v) {
+                            ch['overall_style'] = v;
+                            _scheduleAutosave(state);
+                          },
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1357,7 +2371,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             border: OutlineInputBorder(),
                             helperText: 'Channel branding style',
                           ),
-                          onChanged: (v) => ch['channel_style'] = v,
+                          onChanged: (v) {
+                            ch['channel_style'] = v;
+                            _scheduleAutosave(state);
+                          },
                         ),
                       ),
                     ],
@@ -1374,7 +2391,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             labelText: 'Visual Style',
                             border: OutlineInputBorder(),
                           ),
-                          onChanged: (v) => ch['visual_style'] = v,
+                          onChanged: (v) {
+                            ch['visual_style'] = v;
+                            _scheduleAutosave(state);
+                          },
                         ),
                       ),
                       const SizedBox(width: 8),
@@ -1385,7 +2405,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
                             labelText: 'Vibe/Mood',
                             border: OutlineInputBorder(),
                           ),
-                          onChanged: (v) => ch['vibe'] = v,
+                          onChanged: (v) {
+                            ch['vibe'] = v;
+                            _scheduleAutosave(state);
+                          },
                         ),
                       ),
                     ],
@@ -1417,12 +2440,1696 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ),
             ),
           );
-        }).toList(),
+    }
+
+  Widget _buildYoutubeChannelExpandedContent(AppState state, int index, Map<String, dynamic> ch, bool isEnabled, String channelLang, bool isLanguageMuted, List<String> availableLangs) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
+      children: [
+        // Close button
+        Align(
+          alignment: Alignment.centerRight,
+          child: IconButton(
+            icon: const Icon(Icons.close),
+            onPressed: () => setState(() => _expandedChannels[index] = false),
+            visualDensity: VisualDensity.compact,
+          ),
+        ),
+        const SizedBox(height: 8),
+        
+        // Language field (code only)
+        Opacity(
+          opacity: isLanguageMuted ? 0.6 : 1.0,
+          child: SizedBox(
+            width: 120,
+            child: Tooltip(
+              message: isLanguageMuted
+                  ? 'This language is not used in the lyrics section. Add it to lyrics first.'
+                  : 'Language used for content generation',
+              child: DropdownButtonFormField<String>(
+                value: channelLang,
+                items: availableLangs
+                    .map((lang) => DropdownMenuItem(
+                          value: lang,
+                          child: Text(lang.toUpperCase()),
+                        ))
+                    .toList(),
+                onChanged: isLanguageMuted
+                    ? null
+                    : (v) {
+                        if (v != null) {
+                          ch['language'] = v;
+                          state.touch();
+                          _scheduleAutosave(state);
+                        }
+                      },
+                decoration: InputDecoration(
+                  hintText: 'Language',
+                  border: const OutlineInputBorder(),
+                  contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+                  isDense: true,
+                  helperText: isLanguageMuted ? 'Not defined' : null,
+                ),
+              ),
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        
+        // Basic channel info
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['title']?.toString(),
+                decoration: const InputDecoration(
+                  labelText: 'Channel Title',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  ch['title'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['handle']?.toString(),
+                decoration: const InputDecoration(
+                  labelText: 'Channel Handle (@username)',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  ch['handle'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        
+        // Description
+        TextFormField(
+          initialValue: ch['description']?.toString(),
+          decoration: const InputDecoration(
+            labelText: 'Channel Description',
+            border: OutlineInputBorder(),
+          ),
+          maxLines: 3,
+          onChanged: (v) {
+            ch['description'] = v;
+            _scheduleAutosave(state);
+          },
+        ),
+        const SizedBox(height: 12),
+        
+        // Keywords and tags
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['keywords']?.toString(),
+                decoration: const InputDecoration(
+                  labelText: 'Keywords (comma-separated)',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  ch['keywords'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['brand_category']?.toString(),
+                decoration: const InputDecoration(
+                  labelText: 'Brand Category',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  ch['brand_category'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        
+        // Style settings
+        Text('Content Style', style: Theme.of(context).textTheme.titleSmall),
+        const SizedBox(height: 8),
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['overall_style']?.toString() ?? 'cinematic',
+                decoration: const InputDecoration(
+                  labelText: 'Overall Style',
+                  border: OutlineInputBorder(),
+                  helperText: 'e.g., cinematic, documentary, artistic',
+                ),
+                onChanged: (v) {
+                  ch['overall_style'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['channel_style']?.toString() ?? '',
+                decoration: const InputDecoration(
+                  labelText: 'Channel-Specific Style',
+                  border: OutlineInputBorder(),
+                  helperText: 'Channel branding style',
+                ),
+                onChanged: (v) {
+                  ch['channel_style'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+          ],
+        ),
+        const SizedBox(height: 12),
+        
+        // Visual properties
+        Row(
+          children: [
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['visual_style']?.toString() ?? 'stylized',
+                decoration: const InputDecoration(
+                  labelText: 'Visual Style',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  ch['visual_style'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+            const SizedBox(width: 8),
+            Expanded(
+              child: TextFormField(
+                initialValue: ch['vibe']?.toString() ?? '',
+                decoration: const InputDecoration(
+                  labelText: 'Vibe/Mood',
+                  border: OutlineInputBorder(),
+                ),
+                onChanged: (v) {
+                  ch['vibe'] = v;
+                  _scheduleAutosave(state);
+                },
+              ),
+            ),
+          ],
+        ),
+        
+        if (isLanguageMuted)
+          Container(
+            margin: const EdgeInsets.only(top: 12),
+            padding: const EdgeInsets.all(8),
+            decoration: BoxDecoration(
+              color: Colors.orange.withOpacity(0.2),
+              borderRadius: BorderRadius.circular(4),
+              border: Border.all(color: Colors.orange.withOpacity(0.5)),
+            ),
+            child: Row(
+              children: [
+                const Icon(Icons.info_outline, size: 16),
+                const SizedBox(width: 8),
+                Expanded(
+                  child: Text(
+                    'This channel language ($channelLang) is not defined in Lyrics. Add this language to the Lyrics section to enable editing.',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                ),
+              ],
+            ),
+          ),
       ],
     );
   }
 
+  void _syncChannel(AppState state, Map<String, dynamic> channel) {
+    _showSnack('Syncing channel: ${channel['title'] ?? 'Untitled'}...');
+    // TODO: Implement channel sync with YouTube API
+  }
+
+  void _exportChannels(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    if (channels.isEmpty) {
+      _showSnack('No channels to export.');
+      return;
+    }
+
+    // Build export data with only editable fields
+    final exportData = {
+      'version': '1.0',
+      'export_date': DateTime.now().toIso8601String(),
+      'source_project': state.selectedProject,
+      'channels': [
+        for (final ch in channels)
+          {
+            'channel_id': ch['channel_id'],
+            'language': ch['language'],
+            'title': ch['title'],
+            'handle': ch['handle'],
+            'description': ch['description'],
+            'keywords': ch['keywords'],
+            'brand_category': ch['brand_category'],
+            'overall_style': ch['overall_style'],
+            'channel_style': ch['channel_style'],
+            'vibe': ch['vibe'],
+            'visual_style': ch['visual_style'],
+            'enabled': ch['enabled'],
+          }
+      ]
+    };
+
+    final jsonString = jsonEncode(exportData);
+    
+    // Try to save to file
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'channels_export_${state.selectedProject}_$timestamp.json';
+      
+      final result = await FilePicker.platform.saveFile(
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null) {
+        await File(result).writeAsString(jsonString);
+        _showSnack('✓ Channels exported to file: $fileName');
+      } else {
+        // If file picker cancelled, copy to clipboard as fallback
+        Clipboard.setData(ClipboardData(text: jsonString));
+        _showSnack('✓ Channels exported to clipboard (${channels.length} channels).');
+      }
+    } catch (e) {
+      // Fallback to clipboard
+      Clipboard.setData(ClipboardData(text: jsonString));
+      _showSnack('✓ Channels exported to clipboard (${channels.length} channels). File save failed: $e');
+    }
+  }
+
+  void _importChannels(AppState state) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) {
+        return;
+      }
+
+      final file = result.files.first;
+      final String jsonString;
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        _showSnack('Cannot read file.');
+        return;
+      }
+      final importData = jsonDecode(jsonString) as Map<String, dynamic>;
+
+      final importedChannels = (importData['channels'] as List?)?.cast<Map>() ?? [];
+      if (importedChannels.isEmpty) {
+        _showSnack('No channels found in import file.');
+        return;
+      }
+
+      final project = state.activeProject;
+      if (project == null) {
+        _showSnack('Load a project first.');
+        return;
+      }
+
+      // Show confirmation dialog
+      if (!mounted) return;
+      final shouldImport = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Channels'),
+          content: Text('Import ${importedChannels.length} channels? Existing channels with same IDs will be updated.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!shouldImport) return;
+
+      final existingChannels = (project['channels'] as List?)?.cast<Map>() ?? [];
+      final existingIds = {for (final ch in existingChannels) (ch as Map)['channel_id']: ch};
+
+      for (final importedCh in importedChannels) {
+        final channelId = importedCh['channel_id'] as String?;
+        if (channelId != null) {
+          if (existingIds.containsKey(channelId)) {
+            // Update existing
+            final existing = existingIds[channelId] as Map<String, dynamic>;
+            existing['language'] = importedCh['language'];
+            existing['title'] = importedCh['title'];
+            existing['handle'] = importedCh['handle'];
+            existing['description'] = importedCh['description'];
+            existing['keywords'] = importedCh['keywords'];
+            existing['brand_category'] = importedCh['brand_category'];
+            existing['overall_style'] = importedCh['overall_style'];
+            existing['channel_style'] = importedCh['channel_style'];
+            existing['vibe'] = importedCh['vibe'];
+            existing['visual_style'] = importedCh['visual_style'];
+            existing['enabled'] = importedCh['enabled'];
+          } else {
+            // Add new
+            existingChannels.add({
+              'channel_id': importedCh['channel_id'],
+              'language': importedCh['language'] ?? 'en',
+              'title': importedCh['title'] ?? 'Imported Channel',
+              'handle': importedCh['handle'] ?? '',
+              'description': importedCh['description'] ?? '',
+              'keywords': importedCh['keywords'] ?? '',
+              'brand_category': importedCh['brand_category'] ?? '',
+              'overall_style': importedCh['overall_style'] ?? 'cinematic',
+              'channel_style': importedCh['channel_style'] ?? '',
+              'vibe': importedCh['vibe'] ?? 'experimental',
+              'visual_style': importedCh['visual_style'] ?? 'stylized',
+              'enabled': importedCh['enabled'] ?? true,
+            });
+          }
+        }
+      }
+
+      project['channels'] = existingChannels;
+      state.touch();
+      _showSnack('✓ Imported ${importedChannels.length} channels successfully.');
+      
+      // Trigger autosave
+      _scheduleAutosave(state);
+    } catch (e) {
+      _showSnack('❌ Error importing channels: $e');
+    }
+  }
+
+  void _exportLyrics(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final lyrics = (project['lyrics'] as Map?) ?? {};
+    final exportData = {
+      'version': '1.0',
+      'export_date': DateTime.now().toIso8601String(),
+      'source_project': state.selectedProject,
+      'lyrics': lyrics,
+    };
+
+    final jsonString = jsonEncode(exportData);
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'lyrics_export_${state.selectedProject}_$timestamp.json';
+      
+      final result = await FilePicker.platform.saveFile(
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null) {
+        await File(result).writeAsString(jsonString);
+        _showSnack('✓ Lyrics exported to file: $fileName');
+      } else {
+        Clipboard.setData(ClipboardData(text: jsonString));
+        _showSnack('✓ Lyrics exported to clipboard.');
+      }
+    } catch (e) {
+      Clipboard.setData(ClipboardData(text: jsonString));
+      _showSnack('✓ Lyrics exported to clipboard. File save failed: $e');
+    }
+  }
+
+  void _importLyrics(AppState state) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final String jsonString;
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        _showSnack('Cannot read file.');
+        return;
+      }
+      final importData = jsonDecode(jsonString) as Map<String, dynamic>;
+      final importedLyrics = importData['lyrics'] as Map?;
+
+      if (importedLyrics == null) {
+        _showSnack('No lyrics found in import file.');
+        return;
+      }
+
+      final project = state.activeProject;
+      if (project == null) {
+        _showSnack('Load a project first.');
+        return;
+      }
+
+      if (!mounted) return;
+      final shouldImport = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Lyrics'),
+          content: const Text('Replace existing lyrics with imported data?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!shouldImport) return;
+
+      project['lyrics'] = importedLyrics;
+      state.touch();
+      _showSnack('✓ Lyrics imported successfully.');
+      _scheduleAutosave(state);
+    } catch (e) {
+      _showSnack('❌ Error importing lyrics: $e');
+    }
+  }
+
+  void _exportStoryboard(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final storyboard = (project['storyboard'] as Map?) ?? {};
+    final exportData = {
+      'version': '1.0',
+      'export_date': DateTime.now().toIso8601String(),
+      'source_project': state.selectedProject,
+      'storyboard': storyboard,
+    };
+
+    final jsonString = jsonEncode(exportData);
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'storyboard_export_${state.selectedProject}_$timestamp.json';
+      
+      final result = await FilePicker.platform.saveFile(
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null) {
+        await File(result).writeAsString(jsonString);
+        _showSnack('✓ Storyboard exported to file: $fileName');
+      } else {
+        Clipboard.setData(ClipboardData(text: jsonString));
+        _showSnack('✓ Storyboard exported to clipboard.');
+      }
+    } catch (e) {
+      Clipboard.setData(ClipboardData(text: jsonString));
+      _showSnack('✓ Storyboard exported to clipboard. File save failed: $e');
+    }
+  }
+
+  void _importStoryboard(AppState state) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final String jsonString;
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        _showSnack('Cannot read file.');
+        return;
+      }
+      final importData = jsonDecode(jsonString) as Map<String, dynamic>;
+      final importedStoryboard = importData['storyboard'] as Map?;
+
+      if (importedStoryboard == null) {
+        _showSnack('No storyboard found in import file.');
+        return;
+      }
+
+      final project = state.activeProject;
+      if (project == null) {
+        _showSnack('Load a project first.');
+        return;
+      }
+
+      if (!mounted) return;
+      final shouldImport = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Storyboard'),
+          content: const Text('Replace existing storyboard with imported data?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!shouldImport) return;
+
+      project['storyboard'] = importedStoryboard;
+      state.touch();
+      _showSnack('✓ Storyboard imported successfully.');
+      _scheduleAutosave(state);
+    } catch (e) {
+      _showSnack('❌ Error importing storyboard: $e');
+    }
+  }
+
+  void _exportCharacters(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final characters = (project['characters'] as List?)?.cast<Map>() ?? [];
+    final exportData = {
+      'version': '1.0',
+      'export_date': DateTime.now().toIso8601String(),
+      'source_project': state.selectedProject,
+      'characters': characters,
+    };
+
+    final jsonString = jsonEncode(exportData);
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'characters_export_${state.selectedProject}_$timestamp.json';
+      
+      final result = await FilePicker.platform.saveFile(
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null) {
+        await File(result).writeAsString(jsonString);
+        _showSnack('✓ Characters exported to file: $fileName');
+      } else {
+        Clipboard.setData(ClipboardData(text: jsonString));
+        _showSnack('✓ Characters exported to clipboard.');
+      }
+    } catch (e) {
+      Clipboard.setData(ClipboardData(text: jsonString));
+      _showSnack('✓ Characters exported to clipboard. File save failed: $e');
+    }
+  }
+
+  void _importCharacters(AppState state) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final String jsonString;
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        _showSnack('Cannot read file.');
+        return;
+      }
+      final importData = jsonDecode(jsonString) as Map<String, dynamic>;
+      final importedCharacters = (importData['characters'] as List?)?.cast<Map>() ?? [];
+
+      if (importedCharacters.isEmpty) {
+        _showSnack('No characters found in import file.');
+        return;
+      }
+
+      final project = state.activeProject;
+      if (project == null) {
+        _showSnack('Load a project first.');
+        return;
+      }
+
+      if (!mounted) return;
+      final shouldImport = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Characters'),
+          content: Text('Import ${importedCharacters.length} characters? Existing characters with same IDs will be updated.'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!shouldImport) return;
+
+      final existingCharacters = (project['characters'] as List?)?.cast<Map>() ?? [];
+      final existingIds = {for (final ch in existingCharacters) (ch as Map)['id']: ch};
+
+      for (final importedCh in importedCharacters) {
+        final charId = importedCh['id'] as String?;
+        if (charId != null) {
+          if (existingIds.containsKey(charId)) {
+            final existing = existingIds[charId] as Map<String, dynamic>;
+            existing.addAll(importedCh as Map<String, dynamic>);
+          } else {
+            existingCharacters.add(importedCh);
+          }
+        }
+      }
+
+      project['characters'] = existingCharacters;
+      state.touch();
+      _showSnack('✓ Imported ${importedCharacters.length} characters successfully.');
+      _scheduleAutosave(state);
+    } catch (e) {
+      _showSnack('❌ Error importing characters: $e');
+    }
+  }
+
+  void _exportFullProject(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final exportData = {
+      'version': '1.0',
+      'export_date': DateTime.now().toIso8601String(),
+      'project_name': state.selectedProject,
+      'project_data': project,
+    };
+
+    final jsonString = jsonEncode(exportData);
+    try {
+      final timestamp = DateTime.now().millisecondsSinceEpoch;
+      final fileName = 'project_backup_${state.selectedProject}_$timestamp.json';
+      
+      final result = await FilePicker.platform.saveFile(
+        fileName: fileName,
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result != null) {
+        await File(result).writeAsString(jsonString);
+        _showSnack('✓ Full project backup exported: $fileName');
+      } else {
+        Clipboard.setData(ClipboardData(text: jsonString));
+        _showSnack('✓ Project data exported to clipboard.');
+      }
+    } catch (e) {
+      Clipboard.setData(ClipboardData(text: jsonString));
+      _showSnack('✓ Project exported to clipboard. File save failed: $e');
+    }
+  }
+
+  void _importFullProject(AppState state) async {
+    try {
+      final result = await FilePicker.platform.pickFiles(
+        type: FileType.custom,
+        allowedExtensions: ['json'],
+      );
+
+      if (result == null || result.files.isEmpty) return;
+
+      final file = result.files.first;
+      final String jsonString;
+      if (file.bytes != null) {
+        jsonString = utf8.decode(file.bytes!);
+      } else if (file.path != null) {
+        jsonString = await File(file.path!).readAsString();
+      } else {
+        _showSnack('Cannot read file.');
+        return;
+      }
+      final importData = jsonDecode(jsonString) as Map<String, dynamic>;
+      final importedProject = importData['project_data'] as Map?;
+
+      if (importedProject == null) {
+        _showSnack('No project data found in import file.');
+        return;
+      }
+
+      if (!mounted) return;
+      final shouldImport = await showDialog<bool>(
+        context: context,
+        builder: (ctx) => AlertDialog(
+          title: const Text('Import Full Project'),
+          content: const Text('This will replace all current project data. Continue?'),
+          actions: [
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, false),
+              child: const Text('Cancel'),
+            ),
+            TextButton(
+              onPressed: () => Navigator.pop(ctx, true),
+              child: const Text('Import'),
+            ),
+          ],
+        ),
+      ) ?? false;
+
+      if (!shouldImport) return;
+
+      // Replace active project with imported data
+      for (final key in state.activeProject!.keys.toList()) {
+        state.activeProject!.remove(key);
+      }
+      state.activeProject!.addAll(importedProject as Map<String, dynamic>);
+      state.touch();
+      _showSnack('✓ Full project imported successfully.');
+      _scheduleAutosave(state);
+    } catch (e) {
+      _showSnack('❌ Error importing project: $e');
+    }
+  }
+
+  void _syncAllChannels(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final oauthToken = youtubeSettings?['oauth_token'] as String?;
+
+    if (oauthToken == null || oauthToken.isEmpty) {
+      _showSnack('YouTube OAuth token not set in Settings. Get one from Google Console (OAuth 2.0 credentials).');
+      return;
+    }
+
+    _showSnack('Syncing channels...\n📌 Strategy: Fetching data for all added channel IDs + auto-discovery');
+
+    try {
+      final allItems = <String, Map<String, dynamic>>{};
+      int totalFetched = 0;
+      final debugLog = <String>[];
+
+      // Helper function to fetch from YouTube API with pagination
+      Future<void> _fetchChannelsWithParams(String description, Map<String, String> params) async {
+        _showSnack('$description...');
+        String? pageToken;
+        int batchCount = 0;
+        int strategyFetched = 0;
+        
+        do {
+          batchCount++;
+          final requestParams = {...params};
+          if (pageToken != null) {
+            requestParams['pageToken'] = pageToken;
+          }
+
+          final url = Uri.https('www.googleapis.com', '/youtube/v3/channels', requestParams);
+          final response = await http.get(
+            url,
+            headers: {'Authorization': 'Bearer $oauthToken'},
+          );
+
+          if (response.statusCode == 200) {
+            final data = jsonDecode(response.body) as Map<String, dynamic>;
+            final responseItems = (data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+            
+            for (final item in responseItems) {
+              final channelId = item['id'] as String?;
+              if (channelId != null && !allItems.containsKey(channelId)) {
+                allItems[channelId] = item;
+                totalFetched++;
+                strategyFetched++;
+              }
+            }
+
+            debugLog.add('✓ $description (batch $batchCount): fetched ${responseItems.length} items, total strategy: $strategyFetched');
+            pageToken = data['nextPageToken'] as String?;
+          } else if (response.statusCode == 403) {
+            // Permission denied - this often means the parameter (managedByMe, etc) is not allowed with current scopes
+            debugLog.add('✗ $description (403 Forbidden): This parameter may not be authorized with current token');
+            return;
+          } else if (response.statusCode == 400) {
+            // Bad request - likely invalid parameter
+            final errorBody = jsonDecode(response.body) as Map<String, dynamic>?;
+            final errorMsg = errorBody?['error']?['message'] as String? ?? 'Bad request';
+            debugLog.add('✗ $description (400 Bad Request): $errorMsg');
+            return;
+          } else {
+            final errorBody = jsonDecode(response.body) as Map<String, dynamic>?;
+            final errorMsg = errorBody?['error']?['message'] as String? ?? 'Failed to fetch channels';
+            debugLog.add('✗ $description (HTTP ${response.statusCode}): $errorMsg');
+            throw Exception(errorMsg);
+          }
+        } while (pageToken != null);
+      }
+
+      try {
+        // Strategy 1: Fetch authenticated user's primary channel (most reliable)
+        await _fetchChannelsWithParams('Strategy 1: Primary channel (mine=true)', {
+          'part': 'snippet,statistics,contentDetails,brandingSettings,status',
+          'mine': 'true',
+          'maxResults': '50',
+        });
+      } catch (e) {
+        debugLog.add('✗ Strategy 1 (Primary): $e');
+      }
+
+      try {
+        // Strategy 2: Fetch additional profiles/brand accounts via forContentOwner
+        // This should fetch channels where the user is a content owner
+        await _fetchChannelsWithParams('Strategy 2: Content owner channels', {
+          'part': 'snippet,statistics,contentDetails,brandingSettings',
+          'forContentOwner': 'true',
+          'maxResults': '50',
+        });
+      } catch (e) {
+        debugLog.add('Note: Strategy 2 (forContentOwner) not available: Check if you have content owner credentials');
+      }
+
+      try {
+        // Strategy 3: Try managedByMe for brand accounts linked to GSuite/Workspace
+        await _fetchChannelsWithParams('Strategy 3: Managed brands (managedByMe=true)', {
+          'part': 'snippet,statistics,contentDetails,brandingSettings',
+          'managedByMe': 'true',
+          'maxResults': '50',
+        });
+      } catch (e) {
+        debugLog.add('Note: Strategy 3 (managedByMe) not available or no managed channels');
+      }
+
+      try {
+        // Strategy 4: Fetch with allThreadsDetails to catch secondary accounts
+        await _fetchChannelsWithParams('Strategy 4: Alt channels query', {
+          'part': 'snippet,statistics,contentDetails',
+          'mine': 'true',
+          'maxResults': '50',
+          'fields': 'items(id,snippet(title,customUrl,description),statistics,contentDetails)',
+        });
+      } catch (e) {
+        debugLog.add('Note: Strategy 4 (alt query): $e');
+      }
+
+      // Strategy 5: Fetch data for manually-added channel IDs and resolve @handles
+      // This is the KEY strategy - it syncs all channel IDs that user has added to the project
+      // PLUS resolves any @handles to their actual YouTube channel IDs
+      try {
+        final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        final channelIdsToSync = <String>[];
+        final handlesToResolve = <String, Map<String, dynamic>>{}; // handle -> channel record
+        
+        for (final ch in existingChannels) {
+          final channelId = ch['channel_id']?.toString();
+          final handle = ch['handle']?.toString();
+          final youtubeChannelId = ch['youtube_channel_id']?.toString();
+          
+          // If channel_id looks like "handle:xxx", it's a deferred handle that needs resolution
+          if (channelId != null && channelId.startsWith('handle:')) {
+            final actualHandle = channelId.replaceFirst('handle:', '');
+            handlesToResolve[actualHandle] = ch;
+          } 
+          // If we have a real channel ID (not handle:xxx), add it to sync list
+          else if (channelId != null && channelId.isNotEmpty && !channelId.startsWith('handle:')) {
+            channelIdsToSync.add(channelId);
+          }
+          // If we have a handle but no resolved YouTube channel ID yet, try to resolve
+          else if (handle != null && handle.isNotEmpty && (youtubeChannelId == null || youtubeChannelId.isEmpty)) {
+            handlesToResolve[handle] = ch;
+          }
+        }
+
+        // First: resolve any unresolved @handles
+        int handlesResolved = 0;
+        if (handlesToResolve.isNotEmpty) {
+          debugLog.add('Strategy 5a: Resolving ${handlesToResolve.length} @handles to channel IDs...');
+          
+          for (final entry in handlesToResolve.entries) {
+            final handle = entry.key;
+            final chRecord = entry.value;
+            
+            try {
+              final resolvedId = await _resolveYouTubeHandleToChannelId(handle);
+              if (resolvedId != null && !resolvedId.startsWith('handle:')) {
+                // Successfully resolved!
+                channelIdsToSync.add(resolvedId);
+                chRecord['channel_id'] = resolvedId; // Update the record
+                handlesResolved++;
+                debugLog.add('  ✓ Resolved @$handle -> $resolvedId');
+              } else {
+                debugLog.add('  ⚠️ Could not resolve @$handle');
+              }
+            } catch (e) {
+              debugLog.add('  ✗ Error resolving @$handle: $e');
+            }
+          }
+        }
+
+        if (channelIdsToSync.isNotEmpty) {
+          debugLog.add('Strategy 5b: Syncing ${channelIdsToSync.length} channel IDs (${handlesResolved} resolved from handles)...');
+          int syncedCount = 0;
+          int failedCount = 0;
+
+          for (final channelId in channelIdsToSync) {
+            try {
+              final url = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
+                'part': 'snippet,statistics,contentDetails,brandingSettings',
+                'id': channelId,
+              });
+
+              final response = await http.get(
+                url,
+                headers: {'Authorization': 'Bearer $oauthToken'},
+              );
+
+              if (response.statusCode == 200) {
+                final data = jsonDecode(response.body) as Map<String, dynamic>;
+                final responseItems = (data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+
+                if (responseItems.isNotEmpty) {
+                  final item = responseItems.first;
+                  if (!allItems.containsKey(channelId)) {
+                    allItems[channelId] = item;
+                    totalFetched++;
+                    syncedCount++;
+                  }
+                }
+              } else if (response.statusCode == 404) {
+                debugLog.add('  ⚠️ Channel $channelId not found (invalid ID)');
+                failedCount++;
+              } else {
+                failedCount++;
+              }
+            } catch (e) {
+              failedCount++;
+            }
+          }
+
+          debugLog.add('✓ Strategy 5: Synced $syncedCount channels, failed: $failedCount');
+        } else {
+          debugLog.add('Note: Strategy 5 (manual IDs): No channels in project yet');
+        }
+      } catch (e) {
+        debugLog.add('Note: Strategy 5 (manual sync): $e');
+      }
+
+      if (allItems.isEmpty) {
+        final logDisplay = debugLog.join('\n');
+        _showSnack('⚠️ No channels synced!\n\nDebug Info:\n$logDisplay\n\nSolution: Use "Add Manual" button to add channel IDs, then run Sync All again.');
+        return;
+      } else {
+        final logDisplay = debugLog.join('\n');
+        _showSnack('Debug - Sync Results:\n$logDisplay');
+      }
+
+      // Update or merge channels
+      final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      final existingIds = <String, Map<String, dynamic>>{};
+      
+      // Safely build existing IDs map
+      for (final ch in existingChannels) {
+        final channelId = ch['channel_id']?.toString();
+        if (channelId != null) {
+          existingIds[channelId] = ch;
+        }
+      }
+
+      int updatedCount = 0;
+      int addedCount = 0;
+
+      // Add all fetched channels
+      for (final ytChannel in allItems.values) {
+        final snippet = ytChannel['snippet'] as Map<String, dynamic>?;
+        final channelId = ytChannel['id'] as String?;
+        final title = snippet?['title'] as String? ?? 'Untitled';
+        final description = snippet?['description'] as String? ?? '';
+        final handle = snippet?['customUrl'] as String? ?? '';
+        
+        // Extract additional metadata
+        final stats = ytChannel['statistics'] as Map<String, dynamic>?;
+        final viewCount = int.tryParse(stats?['viewCount']?.toString() ?? '0') ?? 0;
+        final subscriberCount = int.tryParse(stats?['subscriberCount']?.toString() ?? '0') ?? 0;
+        final videoCount = int.tryParse(stats?['videoCount']?.toString() ?? '0') ?? 0;
+        
+        final branding = ytChannel['brandingSettings'] as Map<String, dynamic>?;
+        final channelBranding = branding?['channel'] as Map<String, dynamic>?;
+        final keywords = channelBranding?['keywords'] as String? ?? '';
+
+        if (channelId != null) {
+          Map<String, dynamic>? ch;
+          
+          // Try to find by channel ID first
+          if (existingIds.containsKey(channelId)) {
+            ch = existingIds[channelId];
+          }
+          
+          // If not found by ID, try to find by handle (for merged channels)
+          if (ch == null && handle.isNotEmpty) {
+            for (final existingCh in existingChannels) {
+              final existingHandle = (existingCh['handle'] as String?)?.toLowerCase();
+              if (existingHandle == handle.toLowerCase()) {
+                ch = existingCh;
+                existingIds[channelId] = ch; // Update the map for future lookups
+                break;
+              }
+            }
+          }
+          
+          if (ch != null) {
+            // Smart merge: only update if YouTube has data and local is empty
+            // Update title only if we don't have one locally
+            if ((ch['title'] == null || (ch['title'] as String).isEmpty) && title.isNotEmpty) {
+              ch['title'] = title;
+            }
+            
+            // Update description only if we don't have one locally
+            if ((ch['description'] == null || (ch['description'] as String).isEmpty) && description.isNotEmpty) {
+              ch['description'] = description;
+            }
+            
+            // Update handle only if we don't have one locally
+            if ((ch['handle'] == null || (ch['handle'] as String).isEmpty) && handle.isNotEmpty) {
+              ch['handle'] = handle;
+            }
+            
+            // Store YouTube channel ID if we just discovered it
+            if ((ch['youtube_channel_id'] == null || (ch['youtube_channel_id'] as String).isEmpty) && channelId.isNotEmpty) {
+              ch['youtube_channel_id'] = channelId;
+            }
+            
+            // Store YouTube metadata for reference (always update these as they're read-only)
+            ch['_yt_view_count'] = viewCount;
+            ch['_yt_subscriber_count'] = subscriberCount;
+            ch['_yt_video_count'] = videoCount;
+            ch['_yt_keywords'] = keywords;
+            ch['_yt_synced_at'] = DateTime.now().toIso8601String();
+            
+            updatedCount++;
+          } else {
+            // Add new channel
+            final lyrics = _ensureLyricsStructure(project);
+            final defaultLang = ((lyrics['languages'] as List?)?.isNotEmpty ?? false)
+                ? (lyrics['languages'] as List).first.toString()
+                : 'en';
+
+            existingChannels.add({
+              'channel_id': channelId,
+              'youtube_channel_id': channelId,
+              'language': defaultLang,
+              'title': title,
+              'handle': handle,
+              'description': description,
+              'keywords': keywords,
+              'brand_category': '',
+              'overall_style': 'cinematic',
+              'channel_style': '',
+              'vibe': 'experimental',
+              'visual_style': 'stylized',
+              'enabled': true,
+              '_yt_view_count': viewCount,
+              '_yt_subscriber_count': subscriberCount,
+              '_yt_video_count': videoCount,
+              '_yt_keywords': keywords,
+              '_yt_synced_at': DateTime.now().toIso8601String(),
+            });
+            addedCount++;
+          }
+        }
+      }
+
+      project['channels'] = existingChannels;
+      state.touch();
+      _scheduleAutosave(state);
+      
+      _showSnack('✅ Sync completed successfully!\n• Updated: $updatedCount channels\n• Added: $addedCount channels\n• Total in project: ${existingChannels.length}\n\n💾 Saving...');
+    } catch (e) {
+      _showSnack('Error syncing channels: $e');
+    }
+  }
+
+  /// Resolves a YouTube @handle to its channel ID using the YouTube Data API v3
+  Future<String?> _resolveYouTubeHandleToChannelId(String handle) async {
+    try {
+      // Remove @ if present
+      final cleanHandle = handle.startsWith('@') ? handle.substring(1) : handle;
+      
+      if (cleanHandle.isEmpty) return null;
+
+      // Try using the youtube.com/@handle format via search API
+      // Note: This uses the public Search API which doesn't require OAuth
+      final apiKey = 'AIzaSyDYwzLahRfSy-nXSesToTUY7dAWcxzBDN4'; // Public API key (limited quota, but sufficient for handle resolution)
+      
+      final url = Uri.https('www.googleapis.com', '/youtube/v3/search', {
+        'q': '@$cleanHandle',
+        'type': 'channel',
+        'part': 'snippet',
+        'maxResults': '5',
+        'key': apiKey,
+      });
+
+      final response = await http.get(url);
+      
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final items = (data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+        
+        for (final item in items) {
+          final snippet = item['snippet'] as Map<String, dynamic>?;
+          final channelTitle = snippet?['title'] as String? ?? '';
+          
+          // Look for exact match in title that starts with @handle
+          if (channelTitle.toLowerCase().contains(cleanHandle.toLowerCase())) {
+            // Fetch the channel to get the actual customUrl
+            final resourceId = item['id'] as Map<String, dynamic>?;
+            final channelId = resourceId?['channelId'] as String?;
+            
+            if (channelId != null) {
+              // Validate by fetching the channel details
+              final detailUrl = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
+                'id': channelId,
+                'part': 'snippet',
+                'key': apiKey,
+              });
+              
+              final detailResponse = await http.get(detailUrl);
+              if (detailResponse.statusCode == 200) {
+                final detailData = jsonDecode(detailResponse.body) as Map<String, dynamic>;
+                final detailItems = (detailData['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+                
+                if (detailItems.isNotEmpty) {
+                  final detailSnippet = detailItems.first['snippet'] as Map<String, dynamic>?;
+                  final customUrl = detailSnippet?['customUrl'] as String? ?? '';
+                  
+                  // Check if this matches our handle
+                  if (customUrl.toLowerCase() == cleanHandle.toLowerCase() || 
+                      customUrl.toLowerCase() == '@$cleanHandle'.toLowerCase()) {
+                    return channelId;
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+      
+      return null;
+    } catch (e) {
+      return null;
+    }
+  }
+
+  void _showAddChannelDialog(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final channelInputController = TextEditingController();
+    final channelTitleController = TextEditingController();
+    
+    if (!mounted) return;
+    final shouldAdd = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Manually Add Channel'),
+        content: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            TextField(
+              controller: channelInputController,
+              decoration: const InputDecoration(
+                labelText: 'YouTube Channel ID or @Handle',
+                hintText: 'Use Channel ID (UC...) or @handle (e.g., @TED)',
+                border: OutlineInputBorder(),
+              ),
+            ),
+            const SizedBox(height: 8),
+            const Text(
+              'If using @handle: app will resolve it to the actual channel ID during sync',
+              style: TextStyle(fontSize: 12, color: Colors.grey),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: channelTitleController,
+              decoration: const InputDecoration(
+                labelText: 'Channel Title',
+                hintText: 'Leave blank to auto-fetch',
+                border: OutlineInputBorder(),
+              ),
+            ),
+          ],
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Add'),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (!shouldAdd) return;
+
+    final channelInput = channelInputController.text.trim();
+    final channelTitle = channelTitleController.text.trim();
+
+    if (channelInput.isEmpty) {
+      _showSnack('Channel ID or @Handle cannot be empty.');
+      return;
+    }
+
+    final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    
+    // Determine if input is @handle or channel ID
+    final isHandle = channelInput.startsWith('@') || !channelInput.startsWith('UC');
+    String? resolvedChannelId = isHandle ? null : channelInput;
+    String inputHandle = isHandle ? (channelInput.startsWith('@') ? channelInput : '@$channelInput') : '';
+
+    // If input is a handle, try to resolve it
+    if (isHandle && resolvedChannelId == null) {
+      _showSnack('Resolving @handle: $inputHandle...');
+      resolvedChannelId = await _resolveYouTubeHandleToChannelId(channelInput);
+      
+      if (resolvedChannelId == null) {
+        _showSnack('⚠️ Could not resolve @handle: $inputHandle\n\nThe handle will be stored and resolved during next sync. Make sure it\'s a valid YouTube channel handle.');
+        // Continue anyway - we'll try to resolve during sync
+        resolvedChannelId = 'handle:${channelInput.replaceFirst(RegExp('^@'), '')}';
+      } else {
+        _showSnack('✓ Resolved @handle to channel ID: $resolvedChannelId');
+      }
+    }
+
+    final finalChannelId = resolvedChannelId ?? channelInput;
+
+    // Check if channel already exists
+    if (existingChannels.any((ch) => ch['channel_id'] == finalChannelId)) {
+      _showSnack('This channel is already in the project.');
+      return;
+    }
+
+    // Also check if this handle already exists (if it was input as handle)
+    if (inputHandle.isNotEmpty &&
+        existingChannels.any((ch) => (ch['handle'] as String?)?.toLowerCase() == inputHandle.toLowerCase())) {
+      _showSnack('A channel with this handle already exists in the project.');
+      return;
+    }
+
+    // Add new channel
+    final lyrics = _ensureLyricsStructure(project);
+    final defaultLang = ((lyrics['languages'] as List?)?.isNotEmpty ?? false)
+        ? (lyrics['languages'] as List).first.toString()
+        : 'en';
+
+    existingChannels.add({
+      'channel_id': finalChannelId,
+      'youtube_channel_id': '',
+      'language': defaultLang,
+      'title': channelTitle.isEmpty ? (inputHandle.isNotEmpty ? inputHandle : 'Manual Channel') : channelTitle,
+      'handle': inputHandle,
+      'description': '',
+      'keywords': '',
+      'brand_category': '',
+      'overall_style': 'cinematic',
+      'channel_style': '',
+      'vibe': 'experimental',
+      'visual_style': 'stylized',
+      'enabled': true,
+    });
+
+    project['channels'] = existingChannels;
+    state.touch();
+    _scheduleAutosave(state);
+    _showSnack('✅ Channel added! ${isHandle ? 'Handle will be resolved during sync.' : ''}');
+  }
+
+  Map<String, Map<String, String>> _generateChannelDataFromPattern({
+    required String prefix,
+    required String baseName,
+    required String rangePattern,
+  }) {
+    // Returns map of channel_id -> {channel_id, handle}
+    final channelData = <String, Map<String, String>>{};
+    
+    // Parse range pattern to extract start, end, and padding
+    final pattern = rangePattern.replaceAll(',', '').trim();
+    
+    // Split by "..." to get components
+    final parts = pattern.split('...').map((p) => p.trim()).where((p) => p.isNotEmpty).toList();
+    
+    if (parts.isEmpty) {
+      return channelData; // Invalid pattern
+    }
+
+    if (parts.length == 1) {
+      // Single value like "5" or "01"
+      final val = parts[0];
+      final channelId = '$prefix$baseName$val';
+      final handle = prefix.isNotEmpty && baseName.isNotEmpty 
+        ? '@${prefix}_${baseName}_$val'
+        : '@${baseName}_$val';
+      channelData[channelId] = {
+        'channel_id': channelId,
+        'handle': handle,
+      };
+      return channelData;
+    }
+
+    // Multiple parts: extract start and end
+    String start = parts[0];
+    String end = parts.isNotEmpty ? parts.last : parts[0];
+
+    // Determine if padding is needed (e.g., "01" vs "1")
+    int? startNum = int.tryParse(start);
+    int? endNum = int.tryParse(end);
+
+    if (startNum == null || endNum == null) {
+      return channelData; // Invalid numbers
+    }
+
+    final padWidth = start.startsWith('0') ? start.length : 0;
+
+    // Generate the range
+    for (int i = startNum; i <= endNum; i++) {
+      final numStr = padWidth > 0 ? i.toString().padLeft(padWidth, '0') : i.toString();
+      final channelId = '$prefix$baseName$numStr';
+      final handle = prefix.isNotEmpty && baseName.isNotEmpty
+        ? '@${prefix}_${baseName}_$numStr'
+        : '@${baseName}_$numStr';
+      channelData[channelId] = {
+        'channel_id': channelId,
+        'handle': handle,
+      };
+    }
+
+    return channelData;
+  }
+
+  void _showBatchChannelDialog(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+
+    final prefixController = TextEditingController(text: 'UC');
+    final baseNameController = TextEditingController();
+    final rangeController = TextEditingController(text: '01 ... 50');
+    
+    if (!mounted) return;
+    final shouldAdd = await showDialog<bool>(
+      context: context,
+      builder: (ctx) => AlertDialog(
+        title: const Text('Generate Channels by Pattern'),
+        content: SizedBox(
+          width: 500,
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Text(
+                'Generate multiple channel IDs using a pattern.',
+                style: Theme.of(context).textTheme.bodySmall,
+              ),
+              const SizedBox(height: 16),
+              TextField(
+                controller: prefixController,
+                decoration: const InputDecoration(
+                  labelText: 'Prefix (e.g., "UC")',
+                  hintText: 'Optional prefix for channel IDs',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: baseNameController,
+                decoration: const InputDecoration(
+                  labelText: 'Base Name (required)',
+                  hintText: 'e.g., "abc" or "myChannel"',
+                  border: OutlineInputBorder(),
+                ),
+              ),
+              const SizedBox(height: 12),
+              TextField(
+                controller: rangeController,
+                decoration: InputDecoration(
+                  labelText: 'Range Pattern (required)',
+                  hintText: 'e.g., "01 ... 50" or "1 ... 100"',
+                  border: const OutlineInputBorder(),
+                  helperText: 'Formats:\n• "01 ... 09 ... 29" → 01, 02, ..., 09, 10, ..., 29\n• "1 ... 50" → 1, 2, ..., 50\n• "001 ... 999" → 001, 002, ..., 999',
+                ),
+                maxLines: 4,
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3)),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text('Examples:', style: Theme.of(context).textTheme.labelSmall),
+                    const SizedBox(height: 6),
+                    Text('• Prefix: "UC", Base: "abc", Range: "01 ... 29"\n→ UCabc01, UCabc02, ..., UCabc29',
+                      style: Theme.of(context).textTheme.bodySmall),
+                    const SizedBox(height: 6),
+                    Text('• Prefix: "", Base: "channel", Range: "1 ... 10"\n→ channel1, channel2, ..., channel10',
+                      style: Theme.of(context).textTheme.bodySmall),
+                  ],
+                ),
+              ),
+            ],
+          ),
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, false),
+            child: const Text('Cancel'),
+          ),
+          TextButton(
+            onPressed: () => Navigator.pop(ctx, true),
+            child: const Text('Generate'),
+          ),
+        ],
+      ),
+    ) ?? false;
+
+    if (!shouldAdd) return;
+
+    final prefix = prefixController.text.trim();
+    final baseName = baseNameController.text.trim();
+    final range = rangeController.text.trim();
+
+    if (baseName.isEmpty || range.isEmpty) {
+      _showSnack('Base name and range are required.');
+      return;
+    }
+
+    // Generate channel data with both IDs and handles
+    final generatedChannels = _generateChannelDataFromPattern(
+      prefix: prefix,
+      baseName: baseName,
+      rangePattern: range,
+    );
+
+    if (generatedChannels.isEmpty) {
+      _showSnack('Could not parse range pattern. Use format like "01 ... 50" or "1 ... 100".');
+      return;
+    }
+
+    // Add generated channels to project
+    final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final existingIds = {for (final ch in existingChannels) ch['channel_id']: true};
+    final existingHandles = {for (final ch in existingChannels) (ch['handle'] as String?)?.toLowerCase() ?? '': ch};
+
+    int addedCount = 0;
+    int skippedCount = 0;
+    int mergedCount = 0;
+
+    final lyrics = _ensureLyricsStructure(project);
+    final defaultLang = ((lyrics['languages'] as List?)?.isNotEmpty ?? false)
+        ? (lyrics['languages'] as List).first.toString()
+        : 'en';
+
+    for (final channelData in generatedChannels.values) {
+      final channelId = channelData['channel_id']!;
+      final handle = channelData['handle']!;
+
+      // Check if channel already exists by ID
+      if (existingIds.containsKey(channelId)) {
+        skippedCount++;
+        continue;
+      }
+
+      // Check if channel with same handle already exists (merge data)
+      final handleLower = handle.toLowerCase();
+      final existingByHandle = existingHandles[handleLower];
+      if (existingByHandle != null && (existingByHandle['youtube_channel_id'] == null || (existingByHandle['youtube_channel_id'] as String).isEmpty)) {
+        // Merge: update the existing channel with the YouTube channel ID
+        existingByHandle['youtube_channel_id'] = channelId;
+        mergedCount++;
+        continue;
+      }
+
+      // Add as new channel
+      existingChannels.add({
+        'channel_id': channelId,
+        'youtube_channel_id': '',  // Will be filled during sync
+        'language': defaultLang,
+        'title': '',  // Will be populated from YouTube sync
+        'handle': handle,
+        'description': '',
+        'keywords': '',
+        'brand_category': '',
+        'overall_style': 'cinematic',
+        'channel_style': '',
+        'vibe': 'experimental',
+        'visual_style': 'stylized',
+        'enabled': true,
+      });
+      addedCount++;
+    }
+
+    project['channels'] = existingChannels;
+    state.touch();
+    _scheduleAutosave(state);
+
+    String mergeMsg = mergedCount > 0 ? '\n• Merged with existing: $mergedCount' : '';
+    _showSnack('✅ Generated channels added!\n• Added: $addedCount\n• Skipped (already exist): $skippedCount$mergeMsg\n• Total in project: ${existingChannels.length}\n\n💡 Next: Click "Sync All" to fetch metadata from YouTube.');
+  }
+
+  void _testOAuthConnection(AppState state) async {
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final oauthToken = youtubeSettings?['oauth_token'] as String?;
+
+    if (oauthToken == null || oauthToken.isEmpty) {
+      _showSnack('No OAuth token found. Set up OAuth first in Settings.');
+      return;
+    }
+
+    _showSnack('Testing OAuth token connection...');
+
+    try {
+      // Test 1: Get authenticated user info
+      final userUrl = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
+        'part': 'id,snippet',
+        'mine': 'true',
+      });
+
+      final userResponse = await http.get(
+        userUrl,
+        headers: {'Authorization': 'Bearer $oauthToken'},
+      );
+
+      if (userResponse.statusCode == 401) {
+        _showSnack('❌ OAuth token is invalid or expired. Re-authorize in Settings.');
+        return;
+      }
+
+      if (userResponse.statusCode == 200) {
+        final userData = jsonDecode(userResponse.body) as Map<String, dynamic>;
+        final items = (userData['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+
+        if (items.isEmpty) {
+          _showSnack('⚠️ Token valid, but no channels accessible. Check Google permissions.');
+          return;
+        }
+
+        final primaryChannel = items.first;
+        final channelTitle = primaryChannel['snippet']?['title'] ?? 'Unknown';
+
+        _showSnack('✅ OAuth Connection Valid!\n• Primary Channel: $channelTitle\n• Total accessible: ${items.length} channel(s)\n\nNote: If you have 30+ channels, some may require special account setup.');
+        return;
+      } else {
+        final errorBody = jsonDecode(userResponse.body) as Map<String, dynamic>?;
+        final errorMsg = errorBody?['error']?['message'] ?? 'Unknown error';
+        _showSnack('❌ Connection failed (HTTP ${userResponse.statusCode}): $errorMsg');
+      }
+    } catch (e) {
+      _showSnack('❌ Error testing connection: $e');
+    }
+  }
+
+
   Widget _buildSunoControlSpace(AppState state, Map<String, dynamic> project, List<String> availableLangs) {
+    final generationMoods = (project['generation_moods'] as Map?)?.cast<String, dynamic>() ?? {
+      'music_mood': 'cinematic, inspiring',
+      'image_mood': 'photorealistic, cinematic',
+      'video_mood': 'smooth transitions, dynamic',
+    };
+    
     return Card(
       color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.3),
       child: Padding(
@@ -1441,6 +4148,32 @@ class _DashboardScreenState extends State<DashboardScreen> {
             Text(
               'Generate songs for all channels using Suno API. Songs will be created according to each channel\'s language, style, and mood settings.',
               style: Theme.of(context).textTheme.bodySmall,
+            ),
+            const SizedBox(height: 12),
+            Container(
+              padding: const EdgeInsets.all(12),
+              decoration: BoxDecoration(
+                border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3)),
+                borderRadius: BorderRadius.circular(8),
+              ),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text('Active Mood Combination:', style: Theme.of(context).textTheme.labelSmall),
+                  const SizedBox(height: 8),
+                  Text(
+                    'Music Mood: ${generationMoods['music_mood'] ?? 'Not set'}',
+                    style: Theme.of(context).textTheme.bodySmall,
+                  ),
+                  Text(
+                    'Combined with each channel\'s tone + vibe → final song generation',
+                    style: Theme.of(context).textTheme.bodySmall?.copyWith(
+                      fontStyle: FontStyle.italic,
+                      color: Theme.of(context).colorScheme.outline,
+                    ),
+                  ),
+                ],
+              ),
             ),
             const SizedBox(height: 12),
             Wrap(
@@ -1486,17 +4219,125 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    // Open YouTube brand accounts page
-    // https://www.youtube.com/channel_list - for brand accounts
-    // https://www.youtube.com/create - for channel creation
-    final url = 'https://www.youtube.com/channel_list';
+    // Open YouTube channel switcher
+    final url = 'https://www.youtube.com/channel_switcher';
     _launchUrl(url);
   }
 
   void _launchUrl(String urlString) {
-    // In a real app, you'd use url_launcher package
-    // For now, we'll just show a notification with the URL
-    _showSnack('Open in browser: $urlString');
+    unawaited(_launchUrlAsync(urlString));
+  }
+
+  Future<void> _launchUrlAsync(String urlString) async {
+    final Uri url = Uri.parse(urlString);
+    try {
+      if (await canLaunchUrl(url)) {
+        await launchUrl(url, mode: LaunchMode.externalApplication);
+      } else {
+        _showSnack('Could not launch $urlString');
+      }
+    } catch (e) {
+      _showSnack('Error opening link: $e');
+    }
+  }
+
+  void _startOAuthFlow(AppState state) async {
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final clientId = youtubeSettings?['client_id'] as String?;
+    final clientSecret = youtubeSettings?['client_secret'] as String?;
+
+    if ((clientId == null || clientId.isEmpty) || (clientSecret == null || clientSecret.isEmpty)) {
+      _showSnack('Client ID and Client Secret must be set in Settings first.');
+      return;
+    }
+
+    // Step 1: Direct user to authorization with FULL scopes for all channels
+    final redirectUri = 'http://localhost:8080/oauth2callback';
+    
+    // Use multiple scopes for full channel access including brand accounts
+    final scopes = [
+      'https://www.googleapis.com/auth/youtube',  // Full YouTube access (not just readonly)
+      'https://www.googleapis.com/auth/youtube.force-ssl',  // Force SSL
+      'https://www.googleapis.com/auth/yt-analytics.readonly',  // Analytics
+      'https://www.googleapis.com/auth/yt-analytics-monetary.readonly',  // Monetary analytics
+    ].map((s) => Uri.encodeComponent(s)).join('%20');
+    
+    final authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?'
+        'client_id=$clientId&'
+        'redirect_uri=${Uri.encodeComponent(redirectUri)}&'
+        'response_type=code&'
+        'scope=$scopes&'
+        'access_type=offline&'
+        'prompt=consent';  // Force consent screen to show all permissions
+
+    _showSnack('Opening Google authorization in browser...\n✓ Grant ALL permissions to access all your channels and brand accounts');
+    _launchUrl(authUrl);
+
+    // Step 2: Show dialog to enter the authorization code
+    if (!mounted) return;
+    final code = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _OAuthCodeDialog(),
+    );
+
+    if (code == null || code.isEmpty) {
+      _showSnack('OAuth setup cancelled.');
+      return;
+    }
+
+    // Step 3: Exchange code for token
+    _showSnack('Exchanging authorization code for access token...');
+    final token = await _exchangeCodeForToken(clientId, clientSecret, code, redirectUri);
+    
+    if (token == null || token.isEmpty) {
+      return;
+    }
+
+    // Step 4: Auto-save to settings and clipboard
+    final youtubeSettings2 = (state.settings['youtube'] as Map?) ?? {};
+    youtubeSettings2['oauth_token'] = token;
+    state.settings['youtube'] = youtubeSettings2;
+    await state.saveSettings(state.settings);
+
+    // Copy to clipboard as well
+    await Clipboard.setData(ClipboardData(text: token));
+    _showSnack('✅ OAuth token obtained and automatically saved to Settings!\n✅ Token also copied to clipboard for backup.');
+  }
+
+  Future<String?> _exchangeCodeForToken(String clientId, String clientSecret, String code, String redirectUri) async {
+    try {
+      final url = Uri.parse('https://oauth2.googleapis.com/token');
+      final response = await http.post(
+        url,
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'code': code,
+          'client_id': clientId,
+          'client_secret': clientSecret,
+          'redirect_uri': redirectUri,
+          'grant_type': 'authorization_code',
+        },
+      );
+
+      if (response.statusCode == 200) {
+        final data = jsonDecode(response.body) as Map<String, dynamic>;
+        final accessToken = data['access_token'] as String?;
+        
+        if (accessToken != null && accessToken.isNotEmpty) {
+          _showSnack('✅ OAuth token obtained successfully!');
+          return accessToken;
+        }
+      }
+
+      final errorData = jsonDecode(response.body) as Map<String, dynamic>?;
+      final errorDesc = errorData?['error_description'] as String? ?? 'Unknown error';
+      _showSnack('Error exchanging code: $errorDesc');
+      return null;
+    } catch (e) {
+      _showSnack('Error exchanging code: $e');
+      return null;
+    }
   }
 
   void _deleteChannel(AppState state, int index) {
@@ -1516,6 +4357,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   channels.removeAt(index);
                   project['channels'] = channels;
                   state.touch();
+                  _scheduleAutosave(state);
                   Navigator.pop(context);
                   _showSnack('Channel deleted.');
                 }
@@ -1529,7 +4371,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Future<void> _generateSongsForAllChannels(AppState state, Map<String, dynamic> project) async {
-    _showSnack('Starting song generation for all channels...');
+    final projectName = state.selectedProject;
+    if (projectName == null) {
+      _showSnack('No project selected');
+      return;
+    }
+
     final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
     final enabled = channels.where((ch) => ch['enabled'] ?? true).toList();
     
@@ -1538,18 +4385,80 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    _showSnack('Generating ${enabled.length} song(s)... (implementation pending)');
-    // TODO: Integrate with Suno API to generate songs based on:
-    // - Language
-    // - Lyrics from project['lyrics']
-    // - Overall style
-    // - Channel-specific style
-    // - Vibe/mood
+    _showSnack('Starting song generation for ${enabled.length} channel(s)...');
+    
+    try {
+      final result = await state.api.generateSongs(projectName);
+      _showSnack('Song generation completed: $result');
+      state.lastWorkflowReport = result;
+      state.notifyListeners();
+    } catch (e) {
+      _showSnack('Song generation failed: $e');
+    }
   }
 
   Future<void> _generateSongsForLanguages(AppState state, Map<String, dynamic> project, List<String> languages) async {
-    _showSnack('Generating songs by language... (implementation pending)');
-    // TODO: Allow user to select which languages to generate for
+    if (languages.isEmpty) {
+      _showSnack('No languages available.');
+      return;
+    }
+
+    final projectName = state.selectedProject;
+    if (projectName == null) {
+      _showSnack('No project selected');
+      return;
+    }
+
+    // Show dialog to select languages
+    showDialog(
+      context: context,
+      builder: (_) {
+        final selected = <String>{};
+        return StatefulBuilder(
+          builder: (_, setState) => AlertDialog(
+            title: const Text('Generate by Language'),
+            content: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: languages
+                  .map((lang) => CheckboxListTile(
+                    title: Text(lang),
+                    value: selected.contains(lang),
+                    onChanged: (v) {
+                      setState(() {
+                        if (v ?? false) {
+                          selected.add(lang);
+                        } else {
+                          selected.remove(lang);
+                        }
+                      });
+                    },
+                  ))
+                  .toList(),
+            ),
+            actions: [
+              TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+              FilledButton(
+                onPressed: selected.isEmpty
+                    ? null
+                    : () async {
+                      Navigator.pop(context);
+                      _showSnack('Generating songs for ${selected.length} language(s)...');
+                      try {
+                        final result = await state.api.generateSongs(projectName);
+                        _showSnack('Song generation completed');
+                        state.lastWorkflowReport = result;
+                        state.notifyListeners();
+                      } catch (e) {
+                        _showSnack('Song generation failed: $e');
+                      }
+                    },
+                child: const Text('Generate'),
+              ),
+            ],
+          ),
+        );
+      },
+    );
   }
 
   Widget _storyboardPage(AppState state) {
@@ -1558,7 +4467,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final storyboard = (project['storyboard'] as Map<String, dynamic>? ?? {'globalMood': '', 'scenes': []});
     project['storyboard'] = storyboard;
     final scenes = (storyboard['scenes'] as List?)?.cast<Map>() ?? [];
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         TextFormField(
           initialValue: storyboard['globalMood']?.toString() ?? '',
@@ -1596,7 +4506,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final project = state.activeProject;
     if (project == null) return const Center(child: Text('Load a project first.'));
     final characters = (project['characters'] as List?)?.cast<Map>() ?? [];
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         FilledButton.icon(onPressed: () => _addCharacter(state), icon: const Icon(Icons.add), label: const Text('Add character')),
         ...characters.map((raw) {
@@ -1617,7 +4528,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _generationPage(AppState state) {
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text('Active project: ${state.selectedProject ?? 'None'}'),
         Text('Episode/Generation slot: ${state.selectedEpisodeIndex + 1}'),
@@ -1642,7 +4554,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _previewPage(AppState state) {
     final project = state.activeProject;
     final channelCount = ((project?['channels'] as List?) ?? []).length;
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text('Channels configured: $channelCount'),
         const SizedBox(height: 12),
@@ -1657,7 +4570,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _uploadPage(AppState state) {
-    return ListView(
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text('Batch upload placeholders are ready in backend upload service.'),
         ListTile(
@@ -1688,6 +4602,80 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
         ),
       ),
+    );
+  }
+}
+
+class _OAuthCodeDialog extends StatefulWidget {
+  @override
+  State<_OAuthCodeDialog> createState() => _OAuthCodeDialogState();
+}
+
+class _OAuthCodeDialogState extends State<_OAuthCodeDialog> {
+  late final TextEditingController codeController;
+
+  @override
+  void initState() {
+    super.initState();
+    codeController = TextEditingController();
+  }
+
+  @override
+  void dispose() {
+    codeController.dispose();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Enter Authorization Code'),
+      content: SizedBox(
+        width: 600,
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            const Text(
+              '✓ IMPORTANT: In the browser, GRANT ALL PERMISSIONS when asked.\n'
+              '✓ This enables access to all your channels and brand accounts.\n\n'
+              'After you approve access, you will be redirected to a URL:\n'
+              'http://localhost:8080/oauth2callback?code=4/0AY0e-...\n\n'
+              'Copy the authorization code (the long string after "code=") and paste it below:',
+              style: TextStyle(fontSize: 12),
+            ),
+            const SizedBox(height: 12),
+            TextField(
+              controller: codeController,
+              decoration: InputDecoration(
+                labelText: 'Authorization code',
+                border: const OutlineInputBorder(),
+                hintText: '4/0AY0e-...',
+                suffixIcon: codeController.text.isNotEmpty
+                    ? IconButton(
+                        icon: const Icon(Icons.clear),
+                        onPressed: () => codeController.clear(),
+                      )
+                    : null,
+              ),
+              maxLines: 3,
+              onChanged: (_) => setState(() {}),
+            ),
+          ],
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.pop(context),
+          child: const Text('Cancel'),
+        ),
+        FilledButton(
+          onPressed: codeController.text.isEmpty
+              ? null
+              : () => Navigator.pop(context, codeController.text.trim()),
+          child: const Text('Exchange Code'),
+        ),
+      ],
     );
   }
 }

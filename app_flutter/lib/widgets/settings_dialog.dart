@@ -14,6 +14,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
   late final TextEditingController sunoToken;
   late final TextEditingController midjourneyToken;
   late final TextEditingController youtubeKey;
+  late final TextEditingController youtubeClientId;
+  late final TextEditingController youtubeClientSecret;
+  late final TextEditingController youtubeOAuthToken;
   late final TextEditingController youtubeEmail;
   late final TextEditingController youtubeHandle;
   late final TextEditingController youtubeBrandChannelId;
@@ -32,6 +35,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
     sunoToken = TextEditingController(text: widget.initial['suno']?['token'] ?? '');
     midjourneyToken = TextEditingController(text: widget.initial['midjourney']?['discord_token'] ?? '');
     youtubeKey = TextEditingController(text: widget.initial['youtube']?['api_key'] ?? '');
+    youtubeClientId = TextEditingController(text: widget.initial['youtube']?['client_id'] ?? '');
+    youtubeClientSecret = TextEditingController(text: widget.initial['youtube']?['client_secret'] ?? '');
+    youtubeOAuthToken = TextEditingController(text: widget.initial['youtube']?['oauth_token'] ?? '');
     youtubeEmail = TextEditingController(text: widget.initial['youtube']?['account_email'] ?? '');
     youtubeHandle = TextEditingController(text: widget.initial['youtube']?['account_handle'] ?? '');
     youtubeBrandChannelId = TextEditingController(text: widget.initial['youtube']?['brand_channel_id'] ?? '');
@@ -57,6 +63,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
     sunoToken.dispose();
     midjourneyToken.dispose();
     youtubeKey.dispose();
+    youtubeClientId.dispose();
+    youtubeClientSecret.dispose();
+    youtubeOAuthToken.dispose();
     youtubeEmail.dispose();
     youtubeHandle.dispose();
     youtubeBrandChannelId.dispose();
@@ -90,9 +99,141 @@ class _SettingsDialogState extends State<SettingsDialog> {
               const SizedBox(height: 8),
               TextField(controller: sunoToken, decoration: const InputDecoration(labelText: 'Suno Token')),
               TextField(controller: midjourneyToken, decoration: const InputDecoration(labelText: 'Midjourney Discord Token')),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(8),
+                  color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.2),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.info, size: 18, color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Text('Fixed Top Taskbar', style: Theme.of(context).textTheme.labelMedium),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '✓ Fixed taskbar at top of screen\n'
+                      '✓ Screen navigation (left) - Click icons to switch screens\n'
+                      '✓ Screen-specific actions (center/right) - Context-aware tools\n'
+                      '✓ Small, organized icon buttons\n'
+                      '✓ Stays in place while canvas pans/scrolls\n'
+                      '\n'
+                      'Each screen has custom actions:\n'
+                      '• Dashboard: Create, Save, Refresh\n'
+                      '• Channels: Sync, Add, Test, Export/Import\n'
+                      '• Lyrics: Add/Delete sections, Navigate chapters\n'
+                      '• Storyboard: Manage scenes\n'
+                      '• Characters: Add/Manage characters\n'
+                      '• Generation: Run workflow, Episodes\n'
+                      '• Upload: Video upload controls',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(8),
+                  color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.2),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.touch_app, size: 18, color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Text('Touch Shortcuts Guide (Mobile)', style: Theme.of(context).textTheme.labelMedium),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      'For keyboard-less and mobile devices:\n'
+                      '\n'
+                      '✓ Floating guide in top-right corner\n'
+                      '✓ Shows shortcut categories on tap\n'
+                      '✓ Drill down to specific actions\n'
+                      '✓ Back button to return to categories\n'
+                      '✓ Compact, fully-rounded icon buttons\n'
+                      '✓ Meaningful icons (Font Awesome)\n'
+                      '✓ Auto-closes after action or tap outside\n'
+                      '\n'
+                      'Categories: Navigation, Project, Channel, Lyrics,\n'
+                      'Storyboard, Character, Generation, Settings, Custom',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
+              const SizedBox(height: 16),
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  border: Border.all(color: Theme.of(context).colorScheme.outline.withOpacity(0.3)),
+                  borderRadius: BorderRadius.circular(8),
+                  color: Theme.of(context).colorScheme.primaryContainer.withOpacity(0.2),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      children: [
+                        Icon(Icons.info, size: 18, color: Theme.of(context).colorScheme.primary),
+                        const SizedBox(width: 8),
+                        Text('YouTube Channel Workflow', style: Theme.of(context).textTheme.labelMedium),
+                      ],
+                    ),
+                    const SizedBox(height: 8),
+                    Text(
+                      '1. Set up OAuth using "Setup OAuth" button on Dashboard\n'
+                      '2. Click "Test Connection" to verify token\n'
+                      '3. Add channels using:\n'
+                      '   • "Add Manual" for single channel IDs\n'
+                      '   • "Generate Pattern" for batch creation (e.g., "UC" + "abc" + "01...50")\n'
+                      '4. Click "Sync All" to fetch metadata for all channels\n'
+                      '5. Data auto-saves every 500ms\n'
+                      '\n'
+                      'Tip: Find channel ID in youtube.com/channel/UC...',
+                      style: Theme.of(context).textTheme.bodySmall,
+                    ),
+                  ],
+                ),
+              ),
               const SizedBox(height: 12),
               Text('YouTube Account', style: Theme.of(context).textTheme.titleSmall),
               TextField(controller: youtubeKey, decoration: const InputDecoration(labelText: 'YouTube API Key')),
+              TextField(
+                controller: youtubeClientId,
+                decoration: const InputDecoration(
+                  labelText: 'YouTube Client ID',
+                  helperText: 'From Google Console: Create OAuth 2.0 Client ID (Desktop app)',
+                ),
+              ),
+              TextField(
+                controller: youtubeClientSecret,
+                decoration: const InputDecoration(
+                  labelText: 'YouTube Client Secret',
+                  helperText: 'From Google Console: Found with Client ID in credentials JSON',
+                ),
+              ),
+              TextField(
+                controller: youtubeOAuthToken,
+                decoration: InputDecoration(
+                  labelText: 'YouTube OAuth Access Token',
+                  helperText: 'Auto-filled via "Setup OAuth" button (grants access to ALL your channels & brand accounts)',
+                ),
+                maxLines: 2,
+              ),
               TextField(controller: youtubeEmail, decoration: const InputDecoration(labelText: 'Google Account Email')),
               TextField(controller: youtubeHandle, decoration: const InputDecoration(labelText: 'YouTube Channel Handle (@username)')),
               TextField(controller: youtubeBrandChannelId, decoration: const InputDecoration(labelText: 'Brand Account Channel ID')),
@@ -201,6 +342,9 @@ class _SettingsDialogState extends State<SettingsDialog> {
               'midjourney': {'discord_token': midjourneyToken.text},
               'youtube': {
                 'api_key': youtubeKey.text,
+                'client_id': youtubeClientId.text,
+                'client_secret': youtubeClientSecret.text,
+                'oauth_token': youtubeOAuthToken.text,
                 'account_email': youtubeEmail.text,
                 'account_handle': youtubeHandle.text,
                 'brand_channel_id': youtubeBrandChannelId.text,
