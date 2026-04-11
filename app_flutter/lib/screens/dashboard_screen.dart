@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'dart:io';
 
 import 'package:file_picker/file_picker.dart';
+import 'package:flutter/gestures.dart';
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:http/http.dart' as http;
@@ -69,7 +70,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedProjectIndex = 0;
   Timer? _autosaveTimer;
   static const Duration _autosaveDebounceDuration = Duration(milliseconds: 500);
-  bool _showTouchGuide = true;
+  bool _showTouchGuide = false;
+  Offset? _lastSecondaryPointerPosition;
 
   @override
   void initState() {
@@ -163,6 +165,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
   Widget _buildFixedTaskbar(AppState state) {
     final currentScreen = _screens.firstWhere((s) => s.id == _activeScreenId);
+    final activeProjectHint = state.selectedProject;
     
     return Container(
       decoration: BoxDecoration(
@@ -207,28 +210,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ),
           const SizedBox(width: 8),
           Text(
-            currentScreen.label,
+            activeProjectHint != null && _activeScreenId == 'projects'
+                ? '${currentScreen.label} • $activeProjectHint'
+                : currentScreen.label,
             style: Theme.of(context).textTheme.titleSmall,
           ),
-          const SizedBox(width: 16),
-          
-          // Separator
-          Container(
-            height: 24,
-            width: 1,
-            color: Theme.of(context).colorScheme.outline.withOpacity(0.3),
-          ),
-          const SizedBox(width: 8),
-          
-          // Screen-specific actions (icon-only, center expands)
-          Expanded(
-            child: Padding(
-              padding: const EdgeInsets.symmetric(horizontal: 8),
-              child: SingleChildScrollView(
-                scrollDirection: Axis.horizontal,
-                child: _buildContextualActions(state),
-              ),
-            ),
+          const Spacer(),
+          SingleChildScrollView(
+            scrollDirection: Axis.horizontal,
+            child: _buildContextualActions(state),
           ),
           
           // Touch guide toggle on far right
@@ -286,6 +276,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _iconButton('Select Language', Icons.translate, () => _showLanguagePicker(state)),
+            _iconButton('Add Language', Icons.language, () => _showAddLanguageDialog(state)),
+            _iconButton('Remove Current Language', Icons.language_outlined, () => _removeCurrentLanguage(state)),
             _iconButton('Add Section', Icons.add, () => _addLyricSection(state)),
             _iconButton('Delete Last', Icons.delete, () => _deleteLastLyricSection(state)),
             _iconButton('Next Chapter', Icons.skip_next, () => state.nextEpisode()),
@@ -299,6 +292,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         return Row(
           mainAxisSize: MainAxisSize.min,
           children: [
+            _iconButton('Setup OAuth', Icons.login, () => _startOAuthFlow(state)),
             _iconButton('Add Manual', Icons.add, () => _showAddChannelDialog(state)),
             _iconButton('Generate Pattern', Icons.functions, () => _showBatchChannelDialog(state)),
             _iconButton('Test Connection', Icons.check_circle, () => _testOAuthConnection(state)),
@@ -307,6 +301,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
             _iconButton('Import Channels', Icons.upload, () => _importChannels(state)),
             _iconButton('Select All', Icons.select_all, () => _selectAllChannels(state)),
             _iconButton('Deselect All', Icons.deselect, () => _deselectAllChannels(state)),
+            _iconButton('Open YouTube', Icons.open_in_new, () => _openYouTubeChannelCreation(state)),
+            _iconButton(
+              _youtubeGridView ? 'Switch to list view' : 'Switch to grid view',
+              _youtubeGridView ? Icons.view_list : Icons.grid_view,
+              () => setState(() => _youtubeGridView = !_youtubeGridView),
+            ),
           ],
         );
       case 'storyboard':
@@ -502,12 +502,25 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final pan = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
     final notes = _screenNotes[_activeScreenId] ?? <_CanvasNote>[];
 
-    return GestureDetector(
-      onPanUpdate: (details) {
+    return Listener(
+      onPointerDown: (event) {
+        if (event.buttons == kSecondaryMouseButton) {
+          _lastSecondaryPointerPosition = event.position;
+        }
+      },
+      onPointerMove: (event) {
+        if (event.buttons != kSecondaryMouseButton || _lastSecondaryPointerPosition == null) {
+          return;
+        }
+        final delta = event.position - _lastSecondaryPointerPosition!;
+        _lastSecondaryPointerPosition = event.position;
+        final current = _screenPanOffsets[_activeScreenId] ?? Offset.zero;
         setState(() {
-          _screenPanOffsets[_activeScreenId] = pan + details.delta;
+          _screenPanOffsets[_activeScreenId] = current + delta;
         });
       },
+      onPointerUp: (_) => _lastSecondaryPointerPosition = null,
+      onPointerCancel: (_) => _lastSecondaryPointerPosition = null,
       child: ScrollConfiguration(
         behavior: ScrollConfiguration.of(context).copyWith(scrollbars: false),
         child: Stack(
@@ -1175,6 +1188,85 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
   }
 
+  void _showLanguagePicker(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) return;
+    final lyrics = _ensureLyricsStructure(project);
+    final languages = (lyrics['languages'] as List).cast<String>();
+    final currentLanguage = lyrics['current_language']?.toString() ?? languages.first;
+    final selected = await showListPopup<String>(
+      context: context,
+      title: 'Select lyrics language',
+      helperText: 'Switch editing language.',
+      selectedValue: currentLanguage,
+      entries: languages
+          .map((lang) => ListPopupEntry<String>(
+                value: lang,
+                label: lang.toUpperCase(),
+                subtitle: lang == currentLanguage ? 'Current' : 'Switch to this language',
+              ))
+          .toList(),
+    );
+    if (selected != null) {
+      lyrics['current_language'] = selected;
+      state.touch();
+    }
+  }
+
+  void _showAddLanguageDialog(AppState state) async {
+    final project = state.activeProject;
+    if (project == null) return;
+    final lyrics = _ensureLyricsStructure(project);
+    final languages = (lyrics['languages'] as List).cast<String>();
+    final blocks = (lyrics['blocks'] as List).cast<Map<String, dynamic>>();
+    final input = TextEditingController();
+    final newLang = await showDialog<String>(
+      context: context,
+      builder: (_) => AlertDialog(
+        title: const Text('Add language'),
+        content: TextField(
+          controller: input,
+          decoration: const InputDecoration(
+            labelText: 'Language code (en, es, fr...)',
+            border: OutlineInputBorder(),
+          ),
+        ),
+        actions: [
+          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
+          FilledButton(onPressed: () => Navigator.pop(context, input.text.trim().toLowerCase()), child: const Text('Add')),
+        ],
+      ),
+    );
+    if (newLang == null || newLang.isEmpty || languages.contains(newLang)) return;
+    languages.add(newLang);
+    for (final block in blocks) {
+      final texts = (block['texts'] as Map).cast<String, dynamic>();
+      texts[newLang] = '';
+    }
+    lyrics['current_language'] = newLang;
+    state.touch();
+  }
+
+  void _removeCurrentLanguage(AppState state) {
+    final project = state.activeProject;
+    if (project == null) return;
+    final lyrics = _ensureLyricsStructure(project);
+    final languages = (lyrics['languages'] as List).cast<String>();
+    if (languages.length <= 1) {
+      _showSnack('At least one language must remain.');
+      return;
+    }
+    final currentLanguage = lyrics['current_language']?.toString() ?? languages.first;
+    final blocks = (lyrics['blocks'] as List).cast<Map<String, dynamic>>();
+    languages.remove(currentLanguage);
+    for (final block in blocks) {
+      final texts = (block['texts'] as Map).cast<String, dynamic>();
+      texts.remove(currentLanguage);
+    }
+    lyrics['current_language'] = languages.first;
+    state.touch();
+  }
+
   Future<void> _showQuickCreateProjectDialog(AppState state) async {
     final name = await showDialog<String>(
       context: context,
@@ -1521,20 +1613,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        TextField(
-          controller: _newProjectController,
-          decoration: const InputDecoration(labelText: 'New project name', border: OutlineInputBorder()),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: [
-            FilledButton(onPressed: () => state.createProject(_newProjectController.text), child: const Text('Create')),
-            OutlinedButton(onPressed: state.refreshProjects, child: const Text('Refresh')),
-            OutlinedButton(onPressed: state.selectedProject == null ? null : state.saveActiveProject, child: const Text('Save active')),
-          ],
-        ),
-        const SizedBox(height: 8),
         if (state.projects.isNotEmpty)
           Card(
             child: Padding(
@@ -1569,6 +1647,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             itemBuilder: (_, displayIndex) {
               final name = filteredProjects[displayIndex];
               final isSelected = displayIndex == _selectedProjectIndex;
+              final isActiveProject = name == state.selectedProject;
               return Focus(
                 onKey: (node, event) {
                   if (event.isKeyPressed(LogicalKeyboardKey.arrowDown)) {
@@ -1600,11 +1679,22 @@ class _DashboardScreenState extends State<DashboardScreen> {
                         )
                       : null,
                   child: Card(
+                    color: isActiveProject ? Theme.of(context).colorScheme.primaryContainer.withOpacity(0.45) : null,
                     child: ListTile(
-                      leading: const Icon(Icons.folder_open),
+                      leading: Icon(isActiveProject ? Icons.task_alt : Icons.folder_open),
                       title: Text(name),
-                      subtitle: Text(name == state.selectedProject ? 'Loaded' : 'Click to load'),
-                      trailing: OutlinedButton(onPressed: () => state.loadProject(name), child: const Text('Load')),
+                      subtitle: Text(isActiveProject ? 'Active project' : 'Click to load'),
+                      trailing: OutlinedButton(
+                        onPressed: () async {
+                          await state.loadProject(name);
+                          if (!mounted) return;
+                          setState(() {
+                            _selectedProjectIndex = displayIndex;
+                          });
+                          _showSnack('Loaded project: $name');
+                        },
+                        child: const Text('Load'),
+                      ),
                     ),
                   ),
                 ),
@@ -1631,124 +1721,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Card(
-          child: Padding(
-            padding: const EdgeInsets.all(12),
-            child: Row(
-              children: [
-                Expanded(
-                  child: DropdownButtonFormField<String>(
-                    value: currentLanguage,
-                    decoration: const InputDecoration(
-                      labelText: 'Current language',
-                      border: OutlineInputBorder(),
-                    ),
-                    items: languages
-                        .map((lang) => DropdownMenuItem<String>(value: lang, child: Text(lang.toUpperCase())))
-                        .toList(),
-                    onChanged: (value) {
-                      if (value == null) return;
-                      lyrics['current_language'] = value;
-                      state.touch();
-                    },
-                  ),
-                ),
-                const SizedBox(width: 8),
-                FilledButton.icon(
-                  onPressed: () async {
-                    final selected = await showListPopup<String>(
-                      context: context,
-                      title: 'Manage lyric languages',
-                      selectedValue: currentLanguage,
-                      helperText: 'Select to switch language (j/k or ↑/↓).',
-                      entries: languages
-                          .map((lang) => ListPopupEntry<String>(
-                                value: lang,
-                                label: lang.toUpperCase(),
-                                subtitle: lang == currentLanguage ? 'Current language' : 'Switch to this language',
-                              ))
-                          .toList(),
-                    );
-                    if (selected != null) {
-                      lyrics['current_language'] = selected;
-                      state.touch();
-                    }
-                  },
-                  icon: const Icon(Icons.translate),
-                  label: const Text('Languages'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: () async {
-                    final input = TextEditingController();
-                    final newLang = await showDialog<String>(
-                      context: context,
-                      builder: (_) => AlertDialog(
-                        title: const Text('Add language'),
-                        content: TextField(
-                          controller: input,
-                          decoration: const InputDecoration(
-                            labelText: 'Language code (e.g. en, es, fr)',
-                            border: OutlineInputBorder(),
-                          ),
-                        ),
-                        actions: [
-                          TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
-                          FilledButton(onPressed: () => Navigator.pop(context, input.text.trim().toLowerCase()), child: const Text('Add')),
-                        ],
-                      ),
-                    );
-                    if (newLang == null || newLang.isEmpty || languages.contains(newLang)) {
-                      return;
-                    }
-                    languages.add(newLang);
-                    for (final block in blocks) {
-                      final texts = (block['texts'] as Map).cast<String, dynamic>();
-                      texts[newLang] = '';
-                    }
-                    lyrics['current_language'] = newLang;
-                    state.touch();
-                  },
-                  icon: const Icon(Icons.add),
-                  label: const Text('Add'),
-                ),
-                const SizedBox(width: 8),
-                OutlinedButton.icon(
-                  onPressed: languages.length <= 1
-                      ? null
-                      : () {
-                          final removalTarget = currentLanguage;
-                          languages.remove(removalTarget);
-                          for (final block in blocks) {
-                            final texts = (block['texts'] as Map).cast<String, dynamic>();
-                            texts.remove(removalTarget);
-                          }
-                          lyrics['current_language'] = languages.first;
-                          state.touch();
-                        },
-                  icon: const Icon(Icons.remove),
-                  label: const Text('Remove current'),
-                ),
-              ],
-            ),
-          ),
-        ),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: [
-            FilledButton.icon(
-              onPressed: () => _addLyricSection(state),
-              icon: const Icon(Icons.add_box_outlined),
-              label: const Text('Add lyrics block'),
-            ),
-            OutlinedButton.icon(
-              onPressed: blocks.isEmpty ? null : () => _deleteLastLyricSection(state),
-              icon: const Icon(Icons.indeterminate_check_box_outlined),
-              label: const Text('Remove last block'),
-            ),
-          ],
-        ),
+        Text('Current language: ${currentLanguage.toUpperCase()} • ${languages.length} configured'),
         const SizedBox(height: 8),
         ...blocks.asMap().entries.map((entry) {
           final index = entry.key;
@@ -1852,66 +1825,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
         Row(
           children: [
             Text('YouTube Channels', style: Theme.of(context).textTheme.titleLarge),
-            const Spacer(),
-            OutlinedButton.icon(
-              onPressed: () => _startOAuthFlow(state),
-              icon: const Icon(Icons.login),
-              label: const Text('Setup OAuth'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => _testOAuthConnection(state),
-              icon: const Icon(Icons.check_circle),
-              label: const Text('Test Connection'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => _syncAllChannels(state),
-              icon: const Icon(Icons.sync),
-              label: const Text('Sync All'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => _exportChannels(state),
-              icon: const Icon(Icons.download),
-              label: const Text('Export'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => _importChannels(state),
-              icon: const Icon(Icons.upload),
-              label: const Text('Import'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => _showAddChannelDialog(state),
-              icon: const Icon(Icons.add),
-              label: const Text('Add Manual'),
-            ),
-            const SizedBox(width: 8),
-            OutlinedButton.icon(
-              onPressed: () => _showBatchChannelDialog(state),
-              icon: const Icon(Icons.functions),
-              label: const Text('Generate Pattern'),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: () => _openYouTubeChannelCreation(state),
-              icon: const Icon(Icons.open_in_new),
-              label: const Text('Open YouTube'),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: () => setState(() => _youtubeGridView = !_youtubeGridView),
-              icon: Icon(_youtubeGridView ? Icons.view_list : Icons.grid_view),
-              label: Text(_youtubeGridView ? 'List View' : 'Grid View'),
-            ),
-            const SizedBox(width: 8),
-            FilledButton.icon(
-              onPressed: () => _addChannel(state),
-              icon: const Icon(Icons.add),
-              label: const Text('Add Channel'),
-            ),
           ],
         ),
         const SizedBox(height: 12),
@@ -1946,11 +1859,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         
         if (channels.isEmpty)
           Card(
-            child: Padding(
-              padding: const EdgeInsets.all(12),
-              child: Text('No channels configured yet. Click "Add Channel" to create one.'),
+              child: Padding(
+                padding: const EdgeInsets.all(12),
+                child: Text('No channels configured yet. Use the top taskbar actions to add/sync channels.'),
+              ),
             ),
-          ),
         
         // Channels grid or list view
         if (_youtubeGridView)
@@ -2413,6 +2326,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       ),
                     ],
                   ),
+                  const SizedBox(height: 12),
+                  _buildYoutubeMetadataPanel(ch),
                   
                   if (isLanguageMuted)
                     Container(
@@ -2649,6 +2564,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ],
         ),
+        const SizedBox(height: 12),
+        _buildYoutubeMetadataPanel(ch),
         
         if (isLanguageMuted)
           Container(
@@ -2673,6 +2590,47 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _buildYoutubeMetadataPanel(Map<String, dynamic> ch) {
+    final syncedAt = ch['yt_synced_at']?.toString() ?? ch['_yt_synced_at']?.toString() ?? '';
+    final channelId = ch['youtube_channel_id']?.toString().isNotEmpty == true
+        ? ch['youtube_channel_id'].toString()
+        : ch['channel_id']?.toString() ?? '';
+    final subscribers = ch['yt_subscriber_count'] ?? ch['_yt_subscriber_count'] ?? 0;
+    final videos = ch['yt_video_count'] ?? ch['_yt_video_count'] ?? 0;
+    final views = ch['yt_view_count'] ?? ch['_yt_view_count'] ?? 0;
+    final customUrl = ch['yt_custom_url']?.toString() ?? '';
+    final country = ch['yt_country']?.toString() ?? '';
+    final source = ch['yt_sync_source']?.toString() ?? '';
+    final madeForKids = ch['yt_made_for_kids'];
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Text('YouTube Sync Metadata', style: Theme.of(context).textTheme.labelLarge),
+            const SizedBox(height: 6),
+            SelectableText('Channel ID: $channelId'),
+            if (customUrl.isNotEmpty) SelectableText('Handle URL: $customUrl'),
+            Wrap(
+              spacing: 12,
+              runSpacing: 4,
+              children: [
+                Text('Subscribers: $subscribers'),
+                Text('Videos: $videos'),
+                Text('Views: $views'),
+                if (country.isNotEmpty) Text('Country: $country'),
+                if (madeForKids != null) Text('Made for kids: $madeForKids'),
+              ],
+            ),
+            if (source.isNotEmpty) Text('Sync source: $source'),
+            if (syncedAt.isNotEmpty) Text('Last sync: $syncedAt'),
+          ],
+        ),
+      ),
     );
   }
 
@@ -3283,9 +3241,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final youtubeSettings = state.settings['youtube'] as Map?;
     final oauthToken = youtubeSettings?['oauth_token'] as String?;
+    final apiKey = youtubeSettings?['api_key']?.toString();
 
-    if (oauthToken == null || oauthToken.isEmpty) {
-      _showSnack('YouTube OAuth token not set in Settings. Get one from Google Console (OAuth 2.0 credentials).');
+    if ((oauthToken == null || oauthToken.isEmpty) && (apiKey == null || apiKey.isEmpty)) {
+      _showSnack('YouTube OAuth token or API key is required in Settings before channel sync can run.');
       return;
     }
 
@@ -3295,6 +3254,33 @@ class _DashboardScreenState extends State<DashboardScreen> {
       final allItems = <String, Map<String, dynamic>>{};
       int totalFetched = 0;
       final debugLog = <String>[];
+
+      Future<http.Response> _youtubeGet(
+        String path,
+        Map<String, String> query, {
+        bool preferOAuth = true,
+      }) async {
+        if (preferOAuth && oauthToken != null && oauthToken.isNotEmpty) {
+          final oauthUrl = Uri.https('www.googleapis.com', path, query);
+          final oauthResp = await http.get(oauthUrl, headers: {'Authorization': 'Bearer $oauthToken'});
+          if (oauthResp.statusCode == 200) return oauthResp;
+          if (oauthResp.statusCode == 401 || oauthResp.statusCode == 403) {
+            if (apiKey != null && apiKey.isNotEmpty) {
+              final keyed = Map<String, String>.from(query)..['key'] = apiKey;
+              final keyUrl = Uri.https('www.googleapis.com', path, keyed);
+              return http.get(keyUrl);
+            }
+          }
+          return oauthResp;
+        }
+
+        final keyed = Map<String, String>.from(query);
+        if (apiKey != null && apiKey.isNotEmpty) {
+          keyed['key'] = apiKey;
+        }
+        final url = Uri.https('www.googleapis.com', path, keyed);
+        return http.get(url);
+      }
 
       // Helper function to fetch from YouTube API with pagination
       Future<void> _fetchChannelsWithParams(String description, Map<String, String> params) async {
@@ -3310,11 +3296,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
             requestParams['pageToken'] = pageToken;
           }
 
-          final url = Uri.https('www.googleapis.com', '/youtube/v3/channels', requestParams);
-          final response = await http.get(
-            url,
-            headers: {'Authorization': 'Bearer $oauthToken'},
-          );
+          final response = await _youtubeGet('/youtube/v3/channels', requestParams);
 
           if (response.statusCode == 200) {
             final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -3365,7 +3347,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         // Strategy 2: Fetch additional profiles/brand accounts via forContentOwner
         // This should fetch channels where the user is a content owner
         await _fetchChannelsWithParams('Strategy 2: Content owner channels', {
-          'part': 'snippet,statistics,contentDetails,brandingSettings',
+          'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
           'forContentOwner': 'true',
           'maxResults': '50',
         });
@@ -3376,7 +3358,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       try {
         // Strategy 3: Try managedByMe for brand accounts linked to GSuite/Workspace
         await _fetchChannelsWithParams('Strategy 3: Managed brands (managedByMe=true)', {
-          'part': 'snippet,statistics,contentDetails,brandingSettings',
+          'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
           'managedByMe': 'true',
           'maxResults': '50',
         });
@@ -3387,7 +3369,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       try {
         // Strategy 4: Fetch with allThreadsDetails to catch secondary accounts
         await _fetchChannelsWithParams('Strategy 4: Alt channels query', {
-          'part': 'snippet,statistics,contentDetails',
+          'part': 'snippet,statistics,contentDetails,status,topicDetails,localizations',
           'mine': 'true',
           'maxResults': '50',
           'fields': 'items(id,snippet(title,customUrl,description),statistics,contentDetails)',
@@ -3413,7 +3395,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
           if (channelId != null && channelId.startsWith('handle:')) {
             final actualHandle = channelId.replaceFirst('handle:', '');
             handlesToResolve[actualHandle] = ch;
-          } 
+          }
+          // Accept direct @handle entries in channel_id
+          else if (channelId != null && channelId.startsWith('@')) {
+            handlesToResolve[channelId] = ch;
+          }
           // If we have a real channel ID (not handle:xxx), add it to sync list
           else if (channelId != null && channelId.isNotEmpty && !channelId.startsWith('handle:')) {
             channelIdsToSync.add(channelId);
@@ -3434,7 +3420,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
             final chRecord = entry.value;
             
             try {
-              final resolvedId = await _resolveYouTubeHandleToChannelId(handle);
+              final resolvedId = await _resolveYouTubeHandleToChannelId(
+                handle,
+                apiKey: apiKey,
+                oauthToken: oauthToken,
+              );
               if (resolvedId != null && !resolvedId.startsWith('handle:')) {
                 // Successfully resolved!
                 channelIdsToSync.add(resolvedId);
@@ -3457,15 +3447,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
           for (final channelId in channelIdsToSync) {
             try {
-              final url = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
-                'part': 'snippet,statistics,contentDetails,brandingSettings',
+              final response = await _youtubeGet('/youtube/v3/channels', {
+                'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
                 'id': channelId,
               });
-
-              final response = await http.get(
-                url,
-                headers: {'Authorization': 'Bearer $oauthToken'},
-              );
 
               if (response.statusCode == 200) {
                 final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -3529,16 +3514,24 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final title = snippet?['title'] as String? ?? 'Untitled';
         final description = snippet?['description'] as String? ?? '';
         final handle = snippet?['customUrl'] as String? ?? '';
+        final publishedAt = snippet?['publishedAt'] as String? ?? '';
+        final country = snippet?['country'] as String? ?? '';
+        final defaultLanguage = snippet?['defaultLanguage'] as String? ?? '';
         
         // Extract additional metadata
         final stats = ytChannel['statistics'] as Map<String, dynamic>?;
         final viewCount = int.tryParse(stats?['viewCount']?.toString() ?? '0') ?? 0;
         final subscriberCount = int.tryParse(stats?['subscriberCount']?.toString() ?? '0') ?? 0;
         final videoCount = int.tryParse(stats?['videoCount']?.toString() ?? '0') ?? 0;
+        final hiddenSubscriberCount = stats?['hiddenSubscriberCount'] == true;
         
         final branding = ytChannel['brandingSettings'] as Map<String, dynamic>?;
         final channelBranding = branding?['channel'] as Map<String, dynamic>?;
         final keywords = channelBranding?['keywords'] as String? ?? '';
+        final status = ytChannel['status'] as Map<String, dynamic>?;
+        final contentDetails = ytChannel['contentDetails'] as Map<String, dynamic>?;
+        final topicDetails = ytChannel['topicDetails'] as Map<String, dynamic>?;
+        final localizations = ytChannel['localizations'] as Map<String, dynamic>? ?? {};
 
         if (channelId != null) {
           Map<String, dynamic>? ch;
@@ -3583,11 +3576,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
             }
             
             // Store YouTube metadata for reference (always update these as they're read-only)
-            ch['_yt_view_count'] = viewCount;
-            ch['_yt_subscriber_count'] = subscriberCount;
-            ch['_yt_video_count'] = videoCount;
-            ch['_yt_keywords'] = keywords;
-            ch['_yt_synced_at'] = DateTime.now().toIso8601String();
+            ch['yt_custom_url'] = handle;
+            ch['yt_country'] = country;
+            ch['yt_default_language'] = defaultLanguage;
+            ch['yt_published_at'] = publishedAt;
+            ch['yt_subscriber_count'] = subscriberCount;
+            ch['yt_video_count'] = videoCount;
+            ch['yt_view_count'] = viewCount;
+            ch['yt_hidden_subscriber_count'] = hiddenSubscriberCount;
+            ch['yt_is_linked'] = status?['isLinked'] == true;
+            ch['yt_made_for_kids'] = status?['madeForKids'];
+            ch['yt_self_declared_made_for_kids'] = status?['selfDeclaredMadeForKids'];
+            ch['yt_privacy_status'] = status?['privacyStatus']?.toString() ?? '';
+            ch['yt_topic_ids'] = (topicDetails?['topicIds'] as List?)?.cast<dynamic>() ?? [];
+            ch['yt_topic_categories'] = (topicDetails?['topicCategories'] as List?)?.cast<dynamic>() ?? [];
+            ch['yt_localizations'] = localizations;
+            ch['yt_branding'] = {
+              'keywords': keywords,
+              'channel': channelBranding ?? {},
+              'image': branding?['image'] ?? {},
+              'watch': branding?['watch'] ?? {},
+            };
+            ch['yt_uploads_playlist'] =
+                (contentDetails?['relatedPlaylists'] as Map<String, dynamic>?)?['uploads']?.toString() ?? '';
+            ch['yt_sync_source'] = 'oauth_or_api';
+            ch['yt_synced_at'] = DateTime.now().toIso8601String();
             
             updatedCount++;
           } else {
@@ -3611,11 +3624,31 @@ class _DashboardScreenState extends State<DashboardScreen> {
               'vibe': 'experimental',
               'visual_style': 'stylized',
               'enabled': true,
-              '_yt_view_count': viewCount,
-              '_yt_subscriber_count': subscriberCount,
-              '_yt_video_count': videoCount,
-              '_yt_keywords': keywords,
-              '_yt_synced_at': DateTime.now().toIso8601String(),
+              'yt_custom_url': handle,
+              'yt_country': country,
+              'yt_default_language': defaultLanguage,
+              'yt_published_at': publishedAt,
+              'yt_subscriber_count': subscriberCount,
+              'yt_video_count': videoCount,
+              'yt_view_count': viewCount,
+              'yt_hidden_subscriber_count': hiddenSubscriberCount,
+              'yt_is_linked': status?['isLinked'] == true,
+              'yt_made_for_kids': status?['madeForKids'],
+              'yt_self_declared_made_for_kids': status?['selfDeclaredMadeForKids'],
+              'yt_privacy_status': status?['privacyStatus']?.toString() ?? '',
+              'yt_topic_ids': (topicDetails?['topicIds'] as List?)?.cast<dynamic>() ?? [],
+              'yt_topic_categories': (topicDetails?['topicCategories'] as List?)?.cast<dynamic>() ?? [],
+              'yt_localizations': localizations,
+              'yt_branding': {
+                'keywords': keywords,
+                'channel': channelBranding ?? {},
+                'image': branding?['image'] ?? {},
+                'watch': branding?['watch'] ?? {},
+              },
+              'yt_uploads_playlist':
+                  (contentDetails?['relatedPlaylists'] as Map<String, dynamic>?)?['uploads']?.toString() ?? '',
+              'yt_sync_source': 'oauth_or_api',
+              'yt_synced_at': DateTime.now().toIso8601String(),
             });
             addedCount++;
           }
@@ -3633,26 +3666,35 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   /// Resolves a YouTube @handle to its channel ID using the YouTube Data API v3
-  Future<String?> _resolveYouTubeHandleToChannelId(String handle) async {
+  Future<String?> _resolveYouTubeHandleToChannelId(String handle, {String? apiKey, String? oauthToken}) async {
     try {
       // Remove @ if present
       final cleanHandle = handle.startsWith('@') ? handle.substring(1) : handle;
       
       if (cleanHandle.isEmpty) return null;
 
+      if ((apiKey == null || apiKey.isEmpty) && (oauthToken == null || oauthToken.isEmpty)) {
+        return null;
+      }
+
       // Try using the youtube.com/@handle format via search API
-      // Note: This uses the public Search API which doesn't require OAuth
-      final apiKey = 'AIzaSyDYwzLahRfSy-nXSesToTUY7dAWcxzBDN4'; // Public API key (limited quota, but sufficient for handle resolution)
-      
-      final url = Uri.https('www.googleapis.com', '/youtube/v3/search', {
+      final query = {
         'q': '@$cleanHandle',
         'type': 'channel',
         'part': 'snippet',
         'maxResults': '5',
-        'key': apiKey,
-      });
-
-      final response = await http.get(url);
+      };
+      http.Response response;
+      if (oauthToken != null && oauthToken.isNotEmpty) {
+        final oauthUrl = Uri.https('www.googleapis.com', '/youtube/v3/search', query);
+        response = await http.get(oauthUrl, headers: {'Authorization': 'Bearer $oauthToken'});
+      } else {
+        final keyUrl = Uri.https('www.googleapis.com', '/youtube/v3/search', {
+          ...query,
+          'key': apiKey!,
+        });
+        response = await http.get(keyUrl);
+      }
       
       if (response.statusCode == 200) {
         final data = jsonDecode(response.body) as Map<String, dynamic>;
@@ -3670,13 +3712,21 @@ class _DashboardScreenState extends State<DashboardScreen> {
             
             if (channelId != null) {
               // Validate by fetching the channel details
-              final detailUrl = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
-                'id': channelId,
-                'part': 'snippet',
-                'key': apiKey,
-              });
-              
-              final detailResponse = await http.get(detailUrl);
+              http.Response detailResponse;
+              if (oauthToken != null && oauthToken.isNotEmpty) {
+                final detailUrl = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
+                  'id': channelId,
+                  'part': 'snippet',
+                });
+                detailResponse = await http.get(detailUrl, headers: {'Authorization': 'Bearer $oauthToken'});
+              } else {
+                final detailUrl = Uri.https('www.googleapis.com', '/youtube/v3/channels', {
+                  'id': channelId,
+                  'part': 'snippet',
+                  'key': apiKey!,
+                });
+                detailResponse = await http.get(detailUrl);
+              }
               if (detailResponse.statusCode == 200) {
                 final detailData = jsonDecode(detailResponse.body) as Map<String, dynamic>;
                 final detailItems = (detailData['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
@@ -3778,7 +3828,14 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // If input is a handle, try to resolve it
     if (isHandle && resolvedChannelId == null) {
       _showSnack('Resolving @handle: $inputHandle...');
-      resolvedChannelId = await _resolveYouTubeHandleToChannelId(channelInput);
+      final youtubeSettings = state.settings['youtube'] as Map?;
+      final apiKey = youtubeSettings?['api_key']?.toString();
+      final oauthToken = youtubeSettings?['oauth_token']?.toString();
+      resolvedChannelId = await _resolveYouTubeHandleToChannelId(
+        channelInput,
+        apiKey: apiKey,
+        oauthToken: oauthToken,
+      );
       
       if (resolvedChannelId == null) {
         _showSnack('⚠️ Could not resolve @handle: $inputHandle\n\nThe handle will be stored and resolved during next sync. Make sure it\'s a valid YouTube channel handle.');
@@ -4476,8 +4533,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
           onChanged: (v) => storyboard['globalMood'] = v,
         ),
         const SizedBox(height: 8),
-        FilledButton.icon(onPressed: () => _addScene(state), icon: const Icon(Icons.add), label: const Text('Add scene')),
-        const SizedBox(height: 8),
         ...scenes.asMap().entries.map((e) {
           final i = e.key;
           final scene = e.value.cast<String, dynamic>();
@@ -4509,7 +4564,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        FilledButton.icon(onPressed: () => _addCharacter(state), icon: const Icon(Icons.add), label: const Text('Add character')),
         ...characters.map((raw) {
           final c = raw.cast<String, dynamic>();
           return Card(
@@ -4533,19 +4587,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       children: [
         Text('Active project: ${state.selectedProject ?? 'None'}'),
         Text('Episode/Generation slot: ${state.selectedEpisodeIndex + 1}'),
-        const SizedBox(height: 8),
-        Wrap(
-          spacing: 8,
-          children: [
-            FilledButton.icon(
-              onPressed: state.selectedProject == null ? null : state.runWorkflow,
-              icon: const Icon(Icons.play_arrow),
-              label: const Text('Run Full Workflow'),
-            ),
-            OutlinedButton(onPressed: state.nextEpisode, child: const Text('Next episode')),
-            OutlinedButton(onPressed: state.previousEpisode, child: const Text('Previous episode')),
-          ],
-        ),
         if (state.lastWorkflowReport != null) SelectableText(const JsonEncoder.withIndent('  ').convert(state.lastWorkflowReport)),
       ],
     );
