@@ -4,7 +4,7 @@ from enum import Enum
 from pathlib import Path
 from typing import Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 
 class WorkflowStep(str, Enum):
@@ -30,15 +30,39 @@ class Storyboard(BaseModel):
 
 
 class ChannelProfile(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     channel_id: str
+    youtube_channel_id: str = ""
     language: str
     title: str
+    handle: str = ""
     description: str
+    keywords: str = ""
+    brand_category: str = ""
     overall_style: str = "cinematic"
     channel_style: str = ""
     vibe: str
     visual_style: str
     enabled: bool = True
+    yt_custom_url: str = ""
+    yt_country: str = ""
+    yt_default_language: str = ""
+    yt_published_at: str = ""
+    yt_subscriber_count: int = 0
+    yt_video_count: int = 0
+    yt_view_count: int = 0
+    yt_hidden_subscriber_count: bool = False
+    yt_is_linked: bool = False
+    yt_made_for_kids: bool | None = None
+    yt_self_declared_made_for_kids: bool | None = None
+    yt_privacy_status: str = ""
+    yt_branding: dict[str, Any] = Field(default_factory=dict)
+    yt_topic_ids: list[str] = Field(default_factory=list)
+    yt_topic_categories: list[str] = Field(default_factory=list)
+    yt_localizations: dict[str, Any] = Field(default_factory=dict)
+    yt_sync_source: str = ""
+    yt_synced_at: str = ""
 
 
 class GenerationMoods(BaseModel):
@@ -48,6 +72,8 @@ class GenerationMoods(BaseModel):
 
 
 class ProjectConfig(BaseModel):
+    model_config = ConfigDict(extra="allow")
+
     name: str
     root_path: Path
     lyrics: dict[str, dict[str, Any]] = Field(default_factory=dict)
