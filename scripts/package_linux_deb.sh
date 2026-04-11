@@ -7,26 +7,27 @@ BACKEND_DIR="$ROOT_DIR/backend_python"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
 
-# Auto-increment version: extract default, increment patch, save back
-SCRIPT_FILE="${BASH_SOURCE[0]}"
-CURRENT_DEFAULT=$(grep -oP 'VERSION_DEFAULT=\K[0-9]+\.[0-9]+\.[0-9]+' "$SCRIPT_FILE" || echo "0.1.0")
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_DEFAULT"
-PATCH=$((PATCH + 1))
-NEW_DEFAULT="${MAJOR}.${MINOR}.${PATCH}"
+CURRENT_PUBSPEC_VERSION=$(awk '/^version:/{print $2; exit}' "$APP_DIR/pubspec.yaml")
+CURRENT_CORE="${CURRENT_PUBSPEC_VERSION%%+*}"
+CURRENT_BUILD="${CURRENT_PUBSPEC_VERSION#*+}"
+if [[ "$CURRENT_BUILD" == "$CURRENT_PUBSPEC_VERSION" ]]; then
+  CURRENT_BUILD="0"
+fi
+IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_CORE"
 
-# Update script with new default version
-sed -i "s/VERSION_DEFAULT=${CURRENT_DEFAULT}/VERSION_DEFAULT=${NEW_DEFAULT}/" "$SCRIPT_FILE"
+NEXT_PATCH=$((PATCH + 1))
+NEXT_BUILD=$((CURRENT_BUILD + 1))
+AUTO_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}+${NEXT_BUILD}"
 
-VERSION="${1:-$NEW_DEFAULT}"
+VERSION="${1:-$AUTO_VERSION}"
 ARCH="amd64"
 PKG_NAME="musicvids-studio"
 PUBSPEC_VERSION="$VERSION"
-
 if [[ "$PUBSPEC_VERSION" != *"+"* ]]; then
-  PUBSPEC_VERSION="${PUBSPEC_VERSION}+1"
+  PUBSPEC_VERSION="${PUBSPEC_VERSION}+${NEXT_BUILD}"
 fi
 
-DEB_VERSION="${VERSION%%+*}"
+DEB_VERSION="${PUBSPEC_VERSION%%+*}"
 
 if ! command -v dpkg-deb >/dev/null 2>&1; then
   echo "dpkg-deb not found. Install with: sudo apt install -y dpkg-dev"
