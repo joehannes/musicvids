@@ -195,11 +195,11 @@ class _SettingsDialogState extends State<SettingsDialog> {
                     ),
                     const SizedBox(height: 8),
                     Text(
-                      '1. Set up OAuth using "Setup OAuth" button on Dashboard\n'
-                      '2. Click "Test Connection" to verify token\n'
-                      '3. Add channels using:\n'
+                      '1. Set YouTube Client ID + Client Secret\n'
+                      '2. Add channels using:\n'
                       '   • "Add Manual" for single channel IDs\n'
                       '   • "Generate Pattern" for batch creation (e.g., "UC" + "abc" + "01...50")\n'
+                      '3. On each channel card, click "Fetch refresh token"\n'
                       '4. Click "Sync All" to fetch metadata for all channels\n'
                       '5. Data auto-saves every 500ms\n'
                       '\n'
@@ -210,7 +210,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 ),
               ),
               const SizedBox(height: 12),
-              Text('YouTube Account', style: Theme.of(context).textTheme.titleSmall),
+              Row(
+                children: [
+                  Text('YouTube Account', style: Theme.of(context).textTheme.titleSmall),
+                  const Spacer(),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      final payload = _buildResultPayload();
+                      payload['__action'] = 'manage_project_youtube_credentials';
+                      Navigator.pop(context, payload);
+                    },
+                    icon: const Icon(Icons.folder_special, size: 16),
+                    label: const Text('Project API Credentials'),
+                  ),
+                ],
+              ),
               TextField(controller: youtubeKey, decoration: const InputDecoration(labelText: 'YouTube API Key')),
               TextField(
                 controller: youtubeClientId,
@@ -229,8 +243,8 @@ class _SettingsDialogState extends State<SettingsDialog> {
               TextField(
                 controller: youtubeOAuthToken,
                 decoration: InputDecoration(
-                  labelText: 'YouTube OAuth Access Token',
-                  helperText: 'Auto-filled via "Setup OAuth" button (grants access to ALL your channels & brand accounts)',
+                  labelText: 'Legacy global OAuth access token (optional)',
+                  helperText: 'Deprecated fallback only. Preferred flow is per-channel refresh token.',
                 ),
                 maxLines: 2,
               ),
@@ -337,38 +351,42 @@ class _SettingsDialogState extends State<SettingsDialog> {
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
         FilledButton(
           onPressed: () {
-            Navigator.pop(context, {
-              'suno': {'token': sunoToken.text},
-              'midjourney': {'discord_token': midjourneyToken.text},
-              'youtube': {
-                'api_key': youtubeKey.text,
-                'client_id': youtubeClientId.text,
-                'client_secret': youtubeClientSecret.text,
-                'oauth_token': youtubeOAuthToken.text,
-                'account_email': youtubeEmail.text,
-                'account_handle': youtubeHandle.text,
-                'brand_channel_id': youtubeBrandChannelId.text,
-                'channel_ids': []
-              },
-              'tiktok': {'username': tiktokUser.text, 'password': tiktokPass.text},
-              'openai': {'api_key': openaiKey.text},
-              'ui': {
-                'shortcuts': {
-                  for (final shortcut in shortcutControllers.entries) shortcut.key: shortcut.value.text.trim(),
-                },
-                'custom_shortcuts': List.generate(customSequenceControllers.length, (index) {
-                  return {
-                    'sequence': customSequenceControllers[index].text.trim(),
-                    'label': customLabelControllers[index].text.trim(),
-                  };
-                }).where((entry) => (entry['sequence'] ?? '').isNotEmpty && (entry['label'] ?? '').isNotEmpty).toList(),
-                'theme': {'active': selectedThemeId},
-              },
-            });
+            Navigator.pop(context, _buildResultPayload());
           },
           child: const Text('Save'),
         ),
       ],
     );
+  }
+
+  Map<String, dynamic> _buildResultPayload() {
+    return {
+      'suno': {'token': sunoToken.text},
+      'midjourney': {'discord_token': midjourneyToken.text},
+      'youtube': {
+        'api_key': youtubeKey.text,
+        'client_id': youtubeClientId.text,
+        'client_secret': youtubeClientSecret.text,
+        'oauth_token': youtubeOAuthToken.text,
+        'account_email': youtubeEmail.text,
+        'account_handle': youtubeHandle.text,
+        'brand_channel_id': youtubeBrandChannelId.text,
+        'channel_ids': []
+      },
+      'tiktok': {'username': tiktokUser.text, 'password': tiktokPass.text},
+      'openai': {'api_key': openaiKey.text},
+      'ui': {
+        'shortcuts': {
+          for (final shortcut in shortcutControllers.entries) shortcut.key: shortcut.value.text.trim(),
+        },
+        'custom_shortcuts': List.generate(customSequenceControllers.length, (index) {
+          return {
+            'sequence': customSequenceControllers[index].text.trim(),
+            'label': customLabelControllers[index].text.trim(),
+          };
+        }).where((entry) => (entry['sequence'] ?? '').isNotEmpty && (entry['label'] ?? '').isNotEmpty).toList(),
+        'theme': {'active': selectedThemeId},
+      },
+    };
   }
 }
