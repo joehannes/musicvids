@@ -70,8 +70,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
   int _selectedProjectIndex = 0;
   Timer? _autosaveTimer;
   static const Duration _autosaveDebounceDuration = Duration(milliseconds: 500);
+  static const int _defaultYouTubeAccessTokenLifetimeSeconds = 3600;
+  static const double _tokenRefreshThresholdRatio = 0.10;
   bool _showTouchGuide = false;
   Offset? _lastSecondaryPointerPosition;
+  String? _oauthHydratedProjectName;
 
   @override
   void initState() {
@@ -1311,6 +1314,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'vibe': 'experimental',
       'visual_style': 'stylized',
       'enabled': true,
+      'yt_oauth_status': 'not_configured',
     });
     project['channels'] = channels;
     state.touch();
@@ -1810,6 +1814,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _channelsPage(AppState state) {
     final project = state.activeProject;
     if (project == null) return const Center(child: Text('Load a project first.'));
+    _ensureChannelOAuthHydration(state);
     final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
     final lyrics = _ensureLyricsStructure(project);
     final availableLangs = (lyrics['languages'] as List?)?.cast<String>() ?? ['en'];
@@ -2327,6 +2332,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
                     ],
                   ),
                   const SizedBox(height: 12),
+                  _buildChannelOAuthPanel(state, ch),
+                  const SizedBox(height: 12),
                   _buildYoutubeMetadataPanel(ch),
                   
                   if (isLanguageMuted)
@@ -2565,6 +2572,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
           ],
         ),
         const SizedBox(height: 12),
+        _buildChannelOAuthPanel(state, ch),
+        const SizedBox(height: 12),
         _buildYoutubeMetadataPanel(ch),
         
         if (isLanguageMuted)
@@ -2590,6 +2599,49 @@ class _DashboardScreenState extends State<DashboardScreen> {
             ),
           ),
       ],
+    );
+  }
+
+  Widget _buildChannelOAuthPanel(AppState state, Map<String, dynamic> ch) {
+    final project = state.activeProject;
+    final channelId = ch['channel_id']?.toString() ?? '';
+    final tokenRecord = project == null || channelId.isEmpty ? null : _channelOAuthRecord(project, channelId);
+    final status = tokenRecord?['status']?.toString() ?? 'not_configured';
+    final expiresAt = tokenRecord?['access_token_expires_at']?.toString() ?? '';
+    final refreshToken = tokenRecord?['refresh_token']?.toString() ?? '';
+    final hasRefresh = refreshToken.isNotEmpty;
+    final isExpiring = tokenRecord != null ? _isAccessTokenExpiring(tokenRecord) : false;
+
+    return Card(
+      child: Padding(
+        padding: const EdgeInsets.all(10),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Row(
+              children: [
+                Text('Channel OAuth', style: Theme.of(context).textTheme.labelLarge),
+                const Spacer(),
+                OutlinedButton.icon(
+                  onPressed: () => _showFetchRefreshTokenDialog(state, ch),
+                  icon: const Icon(Icons.lock_open, size: 16),
+                  label: const Text('Fetch refresh token'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: hasRefresh ? () => _refreshChannelAccessToken(state, ch) : null,
+                  icon: const Icon(Icons.refresh, size: 16),
+                  label: const Text('Refresh access token'),
+                ),
+              ],
+            ),
+            const SizedBox(height: 6),
+            Text('Status: $status${isExpiring ? ' (access token expiring)' : ''}'),
+            Text('Refresh token saved: ${hasRefresh ? 'yes' : 'no'}'),
+            if (expiresAt.isNotEmpty) Text('Access token expires at: $expiresAt'),
+          ],
+        ),
+      ),
     );
   }
 
@@ -2634,9 +2686,39 @@ class _DashboardScreenState extends State<DashboardScreen> {
     );
   }
 
-  void _syncChannel(AppState state, Map<String, dynamic> channel) {
-    _showSnack('Syncing channel: ${channel['title'] ?? 'Untitled'}...');
-    // TODO: Implement channel sync with YouTube API
+  void _syncChannel(AppState state, Map<String, dynamic> channel) async {
+    final project = state.activeProject;
+    if (project == null) return;
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final apiKey = youtubeSettings?['api_key']?.toString() ?? '';
+    final channelId = channel['channel_id']?.toString() ?? '';
+    if (channelId.isEmpty) {
+      _showSnack('Channel ID is required for sync.');
+      return;
+    }
+    final accessToken = await _ensureFreshChannelAccessToken(state, channel);
+    final resolvedChannelId = channelId.startsWith('handle:')
+        ? await _resolveYouTubeHandleToChannelId(channelId.replaceFirst('handle:', ''), apiKey: apiKey, oauthToken: accessToken)
+        : channelId;
+    if (resolvedChannelId == null || resolvedChannelId.isEmpty) {
+      _showSnack('Could not resolve channel ID for sync.');
+      return;
+    }
+    final query = {
+      'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
+      'id': resolvedChannelId,
+      if (apiKey.isNotEmpty && (accessToken == null || accessToken.isEmpty)) 'key': apiKey,
+    };
+    final response = await http.get(
+      Uri.https('www.googleapis.com', '/youtube/v3/channels', query),
+      headers: accessToken != null && accessToken.isNotEmpty ? {'Authorization': 'Bearer $accessToken'} : {},
+    );
+    if (response.statusCode != 200) {
+      _showSnack('Channel sync failed (HTTP ${response.statusCode}).');
+      return;
+    }
+    _showSnack('✅ Synced ${channel['title'] ?? resolvedChannelId}.');
+    _syncAllChannels(state);
   }
 
   void _exportChannels(AppState state) async {
@@ -3240,428 +3322,291 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final youtubeSettings = state.settings['youtube'] as Map?;
-    final oauthToken = youtubeSettings?['oauth_token'] as String?;
-    final apiKey = youtubeSettings?['api_key']?.toString();
-
-    if ((oauthToken == null || oauthToken.isEmpty) && (apiKey == null || apiKey.isEmpty)) {
-      _showSnack('YouTube OAuth token or API key is required in Settings before channel sync can run.');
+    final apiKey = youtubeSettings?['api_key']?.toString() ?? '';
+    final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    if (channels.isEmpty) {
+      _showSnack('No channels configured yet.');
       return;
     }
 
-    _showSnack('Syncing channels...\n📌 Strategy: Fetching data for all added channel IDs + auto-discovery');
+    _showSnack('Syncing channels with per-channel OAuth tokens...');
+
+    int updatedCount = 0;
+    int failedCount = 0;
+
+    for (final ch in channels) {
+      final channelId = ch['channel_id']?.toString() ?? '';
+      if (channelId.isEmpty) {
+        failedCount++;
+        continue;
+      }
+
+      final accessToken = await _ensureFreshChannelAccessToken(state, ch, silent: true);
+      final resolvedChannelId = channelId.startsWith('handle:')
+          ? await _resolveYouTubeHandleToChannelId(channelId.replaceFirst('handle:', ''), apiKey: apiKey, oauthToken: accessToken)
+          : channelId;
+
+      if (resolvedChannelId == null || resolvedChannelId.isEmpty) {
+        failedCount++;
+        continue;
+      }
+
+      final query = {
+        'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
+        'id': resolvedChannelId,
+      };
+      if (apiKey.isNotEmpty && (accessToken == null || accessToken.isEmpty)) {
+        query['key'] = apiKey;
+      }
+
+      final url = Uri.https('www.googleapis.com', '/youtube/v3/channels', query);
+      final response = await http.get(
+        url,
+        headers: accessToken != null && accessToken.isNotEmpty
+            ? {'Authorization': 'Bearer $accessToken'}
+            : {},
+      );
+
+      if (response.statusCode != 200) {
+        failedCount++;
+        continue;
+      }
+
+      final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      final items = (payload['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+      if (items.isEmpty) {
+        failedCount++;
+        continue;
+      }
+
+      final ytChannel = items.first;
+      final snippet = ytChannel['snippet'] as Map<String, dynamic>?;
+      final stats = ytChannel['statistics'] as Map<String, dynamic>?;
+      final branding = ytChannel['brandingSettings'] as Map<String, dynamic>?;
+      final channelBranding = branding?['channel'] as Map<String, dynamic>?;
+      final status = ytChannel['status'] as Map<String, dynamic>?;
+      final contentDetails = ytChannel['contentDetails'] as Map<String, dynamic>?;
+      final topicDetails = ytChannel['topicDetails'] as Map<String, dynamic>?;
+
+      ch['youtube_channel_id'] = resolvedChannelId;
+      ch['title'] = (ch['title']?.toString().isNotEmpty == true) ? ch['title'] : (snippet?['title']?.toString() ?? '');
+      ch['description'] = (ch['description']?.toString().isNotEmpty == true) ? ch['description'] : (snippet?['description']?.toString() ?? '');
+      ch['handle'] = (ch['handle']?.toString().isNotEmpty == true) ? ch['handle'] : (snippet?['customUrl']?.toString() ?? '');
+      ch['keywords'] = (ch['keywords']?.toString().isNotEmpty == true) ? ch['keywords'] : (channelBranding?['keywords']?.toString() ?? '');
+
+      ch['yt_custom_url'] = snippet?['customUrl']?.toString() ?? '';
+      ch['yt_country'] = snippet?['country']?.toString() ?? '';
+      ch['yt_default_language'] = snippet?['defaultLanguage']?.toString() ?? '';
+      ch['yt_published_at'] = snippet?['publishedAt']?.toString() ?? '';
+      ch['yt_subscriber_count'] = int.tryParse(stats?['subscriberCount']?.toString() ?? '0') ?? 0;
+      ch['yt_video_count'] = int.tryParse(stats?['videoCount']?.toString() ?? '0') ?? 0;
+      ch['yt_view_count'] = int.tryParse(stats?['viewCount']?.toString() ?? '0') ?? 0;
+      ch['yt_hidden_subscriber_count'] = stats?['hiddenSubscriberCount'] == true;
+      ch['yt_is_linked'] = status?['isLinked'] == true;
+      ch['yt_made_for_kids'] = status?['madeForKids'];
+      ch['yt_self_declared_made_for_kids'] = status?['selfDeclaredMadeForKids'];
+      ch['yt_privacy_status'] = status?['privacyStatus']?.toString() ?? '';
+      ch['yt_topic_ids'] = (topicDetails?['topicIds'] as List?)?.cast<dynamic>() ?? [];
+      ch['yt_topic_categories'] = (topicDetails?['topicCategories'] as List?)?.cast<dynamic>() ?? [];
+      ch['yt_localizations'] = (ytChannel['localizations'] as Map<String, dynamic>?) ?? {};
+      ch['yt_branding'] = {
+        'keywords': channelBranding?['keywords']?.toString() ?? '',
+        'channel': channelBranding ?? {},
+        'image': branding?['image'] ?? {},
+        'watch': branding?['watch'] ?? {},
+      };
+      ch['yt_uploads_playlist'] =
+          (contentDetails?['relatedPlaylists'] as Map<String, dynamic>?)?['uploads']?.toString() ?? '';
+      ch['yt_sync_source'] = accessToken != null && accessToken.isNotEmpty ? 'channel_oauth' : 'api_key';
+      ch['yt_synced_at'] = DateTime.now().toIso8601String();
+      updatedCount++;
+    }
+
+    project['channels'] = channels;
+    state.touch();
+    _scheduleAutosave(state);
+    _showSnack('✅ Channel sync complete. Updated: $updatedCount, failed: $failedCount');
+  }
+
+  void _ensureChannelOAuthHydration(AppState state) {
+    final project = state.activeProject;
+    final projectName = state.selectedProject;
+    if (project == null || projectName == null) return;
+    if (_oauthHydratedProjectName == projectName) return;
+    _oauthHydratedProjectName = projectName;
+    unawaited(_refreshExpiringChannelAccessTokens(state, silent: true));
+  }
+
+  Map<String, dynamic> _ensureProjectOAuthStore(Map<String, dynamic> project) {
+    final existing = project['youtube_oauth'];
+    if (existing is Map) {
+      final typed = existing.cast<String, dynamic>();
+      typed.putIfAbsent('channels', () => <String, dynamic>{});
+      typed.putIfAbsent('token_refresh_policy', () => {
+            'threshold_ratio': _tokenRefreshThresholdRatio,
+            'default_access_token_lifetime_seconds': _defaultYouTubeAccessTokenLifetimeSeconds,
+          });
+      project['youtube_oauth'] = typed;
+      return typed;
+    }
+    final created = <String, dynamic>{
+      'channels': <String, dynamic>{},
+      'token_refresh_policy': {
+        'threshold_ratio': _tokenRefreshThresholdRatio,
+        'default_access_token_lifetime_seconds': _defaultYouTubeAccessTokenLifetimeSeconds,
+      },
+    };
+    project['youtube_oauth'] = created;
+    return created;
+  }
+
+  Map<String, dynamic>? _channelOAuthRecord(Map<String, dynamic> project, String channelId, {bool create = false}) {
+    final oauth = _ensureProjectOAuthStore(project);
+    final channels = (oauth['channels'] as Map?)?.cast<String, dynamic>() ?? <String, dynamic>{};
+    oauth['channels'] = channels;
+    final existing = channels[channelId];
+    if (existing is Map) {
+      return existing.cast<String, dynamic>();
+    }
+    if (!create) return null;
+    final created = <String, dynamic>{
+      'channel_id': channelId,
+      'refresh_token': '',
+      'access_token': '',
+      'access_token_obtained_at': '',
+      'access_token_expires_at': '',
+      'access_token_expires_in_seconds': _defaultYouTubeAccessTokenLifetimeSeconds,
+      'token_type': 'Bearer',
+      'scope': '',
+      'last_refresh_at': '',
+      'status': 'not_configured',
+      'last_error': '',
+    };
+    channels[channelId] = created;
+    return created;
+  }
+
+  bool _isAccessTokenExpiring(Map<String, dynamic> tokenRecord) {
+    final accessToken = tokenRecord['access_token']?.toString() ?? '';
+    final expiresAtRaw = tokenRecord['access_token_expires_at']?.toString() ?? '';
+    if (accessToken.isEmpty || expiresAtRaw.isEmpty) return true;
+    final expiresAt = DateTime.tryParse(expiresAtRaw)?.toUtc();
+    if (expiresAt == null) return true;
+    final now = DateTime.now().toUtc();
+    final expiresInSeconds = int.tryParse(tokenRecord['access_token_expires_in_seconds']?.toString() ?? '') ??
+        _defaultYouTubeAccessTokenLifetimeSeconds;
+    final thresholdSeconds = (expiresInSeconds * _tokenRefreshThresholdRatio).round();
+    return expiresAt.difference(now).inSeconds <= thresholdSeconds;
+  }
+
+  Future<String?> _ensureFreshChannelAccessToken(
+    AppState state,
+    Map<String, dynamic> channel, {
+    bool forceRefresh = false,
+    bool silent = false,
+  }) async {
+    final project = state.activeProject;
+    if (project == null) return null;
+    final channelId = channel['channel_id']?.toString();
+    if (channelId == null || channelId.isEmpty) return null;
+    final record = _channelOAuthRecord(project, channelId);
+    if (record == null) return null;
+    if (forceRefresh || _isAccessTokenExpiring(record)) {
+      return _refreshChannelAccessToken(state, channel, silent: silent);
+    }
+    return record['access_token']?.toString();
+  }
+
+  Future<void> _refreshExpiringChannelAccessTokens(AppState state, {bool silent = false}) async {
+    final project = state.activeProject;
+    if (project == null) return;
+    final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    for (final channel in channels) {
+      final channelId = channel['channel_id']?.toString();
+      if (channelId == null || channelId.isEmpty) continue;
+      final record = _channelOAuthRecord(project, channelId);
+      if (record == null) continue;
+      final refreshToken = record['refresh_token']?.toString() ?? '';
+      if (refreshToken.isEmpty) continue;
+      if (_isAccessTokenExpiring(record)) {
+        await _refreshChannelAccessToken(state, channel, silent: silent);
+      }
+    }
+  }
+
+  Future<String?> _refreshChannelAccessToken(
+    AppState state,
+    Map<String, dynamic> channel, {
+    bool silent = false,
+  }) async {
+    final project = state.activeProject;
+    if (project == null) return null;
+    final channelId = channel['channel_id']?.toString();
+    if (channelId == null || channelId.isEmpty) return null;
+    final record = _channelOAuthRecord(project, channelId, create: true);
+    if (record == null) return null;
+
+    final refreshToken = record['refresh_token']?.toString() ?? '';
+    if (refreshToken.isEmpty) return null;
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final clientId = youtubeSettings?['client_id']?.toString() ?? '';
+    final clientSecret = youtubeSettings?['client_secret']?.toString() ?? '';
+    if (clientId.isEmpty || clientSecret.isEmpty) {
+      if (!silent) {
+        _showSnack('Missing YouTube client credentials in Settings.');
+      }
+      return null;
+    }
 
     try {
-      final allItems = <String, Map<String, dynamic>>{};
-      int totalFetched = 0;
-      final debugLog = <String>[];
-
-      Future<http.Response> _youtubeGet(
-        String path,
-        Map<String, String> query, {
-        bool preferOAuth = true,
-      }) async {
-        if (preferOAuth && oauthToken != null && oauthToken.isNotEmpty) {
-          final oauthUrl = Uri.https('www.googleapis.com', path, query);
-          final oauthResp = await http.get(oauthUrl, headers: {'Authorization': 'Bearer $oauthToken'});
-          if (oauthResp.statusCode == 200) return oauthResp;
-          if (oauthResp.statusCode == 401 || oauthResp.statusCode == 403) {
-            if (apiKey != null && apiKey.isNotEmpty) {
-              final keyed = Map<String, String>.from(query)..['key'] = apiKey;
-              final keyUrl = Uri.https('www.googleapis.com', path, keyed);
-              return http.get(keyUrl);
-            }
-          }
-          return oauthResp;
+      final response = await http.post(
+        Uri.parse('https://oauth2.googleapis.com/token'),
+        headers: {'Content-Type': 'application/x-www-form-urlencoded'},
+        body: {
+          'client_id': clientId,
+          'client_secret': clientSecret,
+          'refresh_token': refreshToken,
+          'grant_type': 'refresh_token',
+        },
+      );
+      if (response.statusCode != 200) {
+        record['status'] = 'error';
+        record['last_error'] = 'HTTP ${response.statusCode}: ${response.body}';
+        if (!silent) {
+          _showSnack('Token refresh failed for $channelId (HTTP ${response.statusCode}).');
         }
-
-        final keyed = Map<String, String>.from(query);
-        if (apiKey != null && apiKey.isNotEmpty) {
-          keyed['key'] = apiKey;
-        }
-        final url = Uri.https('www.googleapis.com', path, keyed);
-        return http.get(url);
+        return null;
       }
-
-      // Helper function to fetch from YouTube API with pagination
-      Future<void> _fetchChannelsWithParams(String description, Map<String, String> params) async {
-        _showSnack('$description...');
-        String? pageToken;
-        int batchCount = 0;
-        int strategyFetched = 0;
-        
-        do {
-          batchCount++;
-          final requestParams = {...params};
-          if (pageToken != null) {
-            requestParams['pageToken'] = pageToken;
-          }
-
-          final response = await _youtubeGet('/youtube/v3/channels', requestParams);
-
-          if (response.statusCode == 200) {
-            final data = jsonDecode(response.body) as Map<String, dynamic>;
-            final responseItems = (data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-            
-            for (final item in responseItems) {
-              final channelId = item['id'] as String?;
-              if (channelId != null && !allItems.containsKey(channelId)) {
-                allItems[channelId] = item;
-                totalFetched++;
-                strategyFetched++;
-              }
-            }
-
-            debugLog.add('✓ $description (batch $batchCount): fetched ${responseItems.length} items, total strategy: $strategyFetched');
-            pageToken = data['nextPageToken'] as String?;
-          } else if (response.statusCode == 403) {
-            // Permission denied - this often means the parameter (managedByMe, etc) is not allowed with current scopes
-            debugLog.add('✗ $description (403 Forbidden): This parameter may not be authorized with current token');
-            return;
-          } else if (response.statusCode == 400) {
-            // Bad request - likely invalid parameter
-            final errorBody = jsonDecode(response.body) as Map<String, dynamic>?;
-            final errorMsg = errorBody?['error']?['message'] as String? ?? 'Bad request';
-            debugLog.add('✗ $description (400 Bad Request): $errorMsg');
-            return;
-          } else {
-            final errorBody = jsonDecode(response.body) as Map<String, dynamic>?;
-            final errorMsg = errorBody?['error']?['message'] as String? ?? 'Failed to fetch channels';
-            debugLog.add('✗ $description (HTTP ${response.statusCode}): $errorMsg');
-            throw Exception(errorMsg);
-          }
-        } while (pageToken != null);
-      }
-
-      try {
-        // Strategy 1: Fetch authenticated user's primary channel (most reliable)
-        await _fetchChannelsWithParams('Strategy 1: Primary channel (mine=true)', {
-          'part': 'snippet,statistics,contentDetails,brandingSettings,status',
-          'mine': 'true',
-          'maxResults': '50',
-        });
-      } catch (e) {
-        debugLog.add('✗ Strategy 1 (Primary): $e');
-      }
-
-      try {
-        // Strategy 2: Fetch additional profiles/brand accounts via forContentOwner
-        // This should fetch channels where the user is a content owner
-        await _fetchChannelsWithParams('Strategy 2: Content owner channels', {
-          'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
-          'forContentOwner': 'true',
-          'maxResults': '50',
-        });
-      } catch (e) {
-        debugLog.add('Note: Strategy 2 (forContentOwner) not available: Check if you have content owner credentials');
-      }
-
-      try {
-        // Strategy 3: Try managedByMe for brand accounts linked to GSuite/Workspace
-        await _fetchChannelsWithParams('Strategy 3: Managed brands (managedByMe=true)', {
-          'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
-          'managedByMe': 'true',
-          'maxResults': '50',
-        });
-      } catch (e) {
-        debugLog.add('Note: Strategy 3 (managedByMe) not available or no managed channels');
-      }
-
-      try {
-        // Strategy 4: Fetch with allThreadsDetails to catch secondary accounts
-        await _fetchChannelsWithParams('Strategy 4: Alt channels query', {
-          'part': 'snippet,statistics,contentDetails,status,topicDetails,localizations',
-          'mine': 'true',
-          'maxResults': '50',
-          'fields': 'items(id,snippet(title,customUrl,description),statistics,contentDetails)',
-        });
-      } catch (e) {
-        debugLog.add('Note: Strategy 4 (alt query): $e');
-      }
-
-      // Strategy 5: Fetch data for manually-added channel IDs and resolve @handles
-      // This is the KEY strategy - it syncs all channel IDs that user has added to the project
-      // PLUS resolves any @handles to their actual YouTube channel IDs
-      try {
-        final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-        final channelIdsToSync = <String>[];
-        final handlesToResolve = <String, Map<String, dynamic>>{}; // handle -> channel record
-        
-        for (final ch in existingChannels) {
-          final channelId = ch['channel_id']?.toString();
-          final handle = ch['handle']?.toString();
-          final youtubeChannelId = ch['youtube_channel_id']?.toString();
-          
-          // If channel_id looks like "handle:xxx", it's a deferred handle that needs resolution
-          if (channelId != null && channelId.startsWith('handle:')) {
-            final actualHandle = channelId.replaceFirst('handle:', '');
-            handlesToResolve[actualHandle] = ch;
-          }
-          // Accept direct @handle entries in channel_id
-          else if (channelId != null && channelId.startsWith('@')) {
-            handlesToResolve[channelId] = ch;
-          }
-          // If we have a real channel ID (not handle:xxx), add it to sync list
-          else if (channelId != null && channelId.isNotEmpty && !channelId.startsWith('handle:')) {
-            channelIdsToSync.add(channelId);
-          }
-          // If we have a handle but no resolved YouTube channel ID yet, try to resolve
-          else if (handle != null && handle.isNotEmpty && (youtubeChannelId == null || youtubeChannelId.isEmpty)) {
-            handlesToResolve[handle] = ch;
-          }
-        }
-
-        // First: resolve any unresolved @handles
-        int handlesResolved = 0;
-        if (handlesToResolve.isNotEmpty) {
-          debugLog.add('Strategy 5a: Resolving ${handlesToResolve.length} @handles to channel IDs...');
-          
-          for (final entry in handlesToResolve.entries) {
-            final handle = entry.key;
-            final chRecord = entry.value;
-            
-            try {
-              final resolvedId = await _resolveYouTubeHandleToChannelId(
-                handle,
-                apiKey: apiKey,
-                oauthToken: oauthToken,
-              );
-              if (resolvedId != null && !resolvedId.startsWith('handle:')) {
-                // Successfully resolved!
-                channelIdsToSync.add(resolvedId);
-                chRecord['channel_id'] = resolvedId; // Update the record
-                handlesResolved++;
-                debugLog.add('  ✓ Resolved @$handle -> $resolvedId');
-              } else {
-                debugLog.add('  ⚠️ Could not resolve @$handle');
-              }
-            } catch (e) {
-              debugLog.add('  ✗ Error resolving @$handle: $e');
-            }
-          }
-        }
-
-        if (channelIdsToSync.isNotEmpty) {
-          debugLog.add('Strategy 5b: Syncing ${channelIdsToSync.length} channel IDs (${handlesResolved} resolved from handles)...');
-          int syncedCount = 0;
-          int failedCount = 0;
-
-          for (final channelId in channelIdsToSync) {
-            try {
-              final response = await _youtubeGet('/youtube/v3/channels', {
-                'part': 'snippet,statistics,contentDetails,brandingSettings,status,topicDetails,localizations',
-                'id': channelId,
-              });
-
-              if (response.statusCode == 200) {
-                final data = jsonDecode(response.body) as Map<String, dynamic>;
-                final responseItems = (data['items'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-
-                if (responseItems.isNotEmpty) {
-                  final item = responseItems.first;
-                  if (!allItems.containsKey(channelId)) {
-                    allItems[channelId] = item;
-                    totalFetched++;
-                    syncedCount++;
-                  }
-                }
-              } else if (response.statusCode == 404) {
-                debugLog.add('  ⚠️ Channel $channelId not found (invalid ID)');
-                failedCount++;
-              } else {
-                failedCount++;
-              }
-            } catch (e) {
-              failedCount++;
-            }
-          }
-
-          debugLog.add('✓ Strategy 5: Synced $syncedCount channels, failed: $failedCount');
-        } else {
-          debugLog.add('Note: Strategy 5 (manual IDs): No channels in project yet');
-        }
-      } catch (e) {
-        debugLog.add('Note: Strategy 5 (manual sync): $e');
-      }
-
-      if (allItems.isEmpty) {
-        final logDisplay = debugLog.join('\n');
-        _showSnack('⚠️ No channels synced!\n\nDebug Info:\n$logDisplay\n\nSolution: Use "Add Manual" button to add channel IDs, then run Sync All again.');
-        return;
-      } else {
-        final logDisplay = debugLog.join('\n');
-        _showSnack('Debug - Sync Results:\n$logDisplay');
-      }
-
-      // Update or merge channels
-      final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
-      final existingIds = <String, Map<String, dynamic>>{};
-      
-      // Safely build existing IDs map
-      for (final ch in existingChannels) {
-        final channelId = ch['channel_id']?.toString();
-        if (channelId != null) {
-          existingIds[channelId] = ch;
-        }
-      }
-
-      int updatedCount = 0;
-      int addedCount = 0;
-
-      // Add all fetched channels
-      for (final ytChannel in allItems.values) {
-        final snippet = ytChannel['snippet'] as Map<String, dynamic>?;
-        final channelId = ytChannel['id'] as String?;
-        final title = snippet?['title'] as String? ?? 'Untitled';
-        final description = snippet?['description'] as String? ?? '';
-        final handle = snippet?['customUrl'] as String? ?? '';
-        final publishedAt = snippet?['publishedAt'] as String? ?? '';
-        final country = snippet?['country'] as String? ?? '';
-        final defaultLanguage = snippet?['defaultLanguage'] as String? ?? '';
-        
-        // Extract additional metadata
-        final stats = ytChannel['statistics'] as Map<String, dynamic>?;
-        final viewCount = int.tryParse(stats?['viewCount']?.toString() ?? '0') ?? 0;
-        final subscriberCount = int.tryParse(stats?['subscriberCount']?.toString() ?? '0') ?? 0;
-        final videoCount = int.tryParse(stats?['videoCount']?.toString() ?? '0') ?? 0;
-        final hiddenSubscriberCount = stats?['hiddenSubscriberCount'] == true;
-        
-        final branding = ytChannel['brandingSettings'] as Map<String, dynamic>?;
-        final channelBranding = branding?['channel'] as Map<String, dynamic>?;
-        final keywords = channelBranding?['keywords'] as String? ?? '';
-        final status = ytChannel['status'] as Map<String, dynamic>?;
-        final contentDetails = ytChannel['contentDetails'] as Map<String, dynamic>?;
-        final topicDetails = ytChannel['topicDetails'] as Map<String, dynamic>?;
-        final localizations = ytChannel['localizations'] as Map<String, dynamic>? ?? {};
-
-        if (channelId != null) {
-          Map<String, dynamic>? ch;
-          
-          // Try to find by channel ID first
-          if (existingIds.containsKey(channelId)) {
-            ch = existingIds[channelId];
-          }
-          
-          // If not found by ID, try to find by handle (for merged channels)
-          if (ch == null && handle.isNotEmpty) {
-            for (final existingCh in existingChannels) {
-              final existingHandle = (existingCh['handle'] as String?)?.toLowerCase();
-              if (existingHandle == handle.toLowerCase()) {
-                ch = existingCh;
-                existingIds[channelId] = ch; // Update the map for future lookups
-                break;
-              }
-            }
-          }
-          
-          if (ch != null) {
-            // Smart merge: only update if YouTube has data and local is empty
-            // Update title only if we don't have one locally
-            if ((ch['title'] == null || (ch['title'] as String).isEmpty) && title.isNotEmpty) {
-              ch['title'] = title;
-            }
-            
-            // Update description only if we don't have one locally
-            if ((ch['description'] == null || (ch['description'] as String).isEmpty) && description.isNotEmpty) {
-              ch['description'] = description;
-            }
-            
-            // Update handle only if we don't have one locally
-            if ((ch['handle'] == null || (ch['handle'] as String).isEmpty) && handle.isNotEmpty) {
-              ch['handle'] = handle;
-            }
-            
-            // Store YouTube channel ID if we just discovered it
-            if ((ch['youtube_channel_id'] == null || (ch['youtube_channel_id'] as String).isEmpty) && channelId.isNotEmpty) {
-              ch['youtube_channel_id'] = channelId;
-            }
-            
-            // Store YouTube metadata for reference (always update these as they're read-only)
-            ch['yt_custom_url'] = handle;
-            ch['yt_country'] = country;
-            ch['yt_default_language'] = defaultLanguage;
-            ch['yt_published_at'] = publishedAt;
-            ch['yt_subscriber_count'] = subscriberCount;
-            ch['yt_video_count'] = videoCount;
-            ch['yt_view_count'] = viewCount;
-            ch['yt_hidden_subscriber_count'] = hiddenSubscriberCount;
-            ch['yt_is_linked'] = status?['isLinked'] == true;
-            ch['yt_made_for_kids'] = status?['madeForKids'];
-            ch['yt_self_declared_made_for_kids'] = status?['selfDeclaredMadeForKids'];
-            ch['yt_privacy_status'] = status?['privacyStatus']?.toString() ?? '';
-            ch['yt_topic_ids'] = (topicDetails?['topicIds'] as List?)?.cast<dynamic>() ?? [];
-            ch['yt_topic_categories'] = (topicDetails?['topicCategories'] as List?)?.cast<dynamic>() ?? [];
-            ch['yt_localizations'] = localizations;
-            ch['yt_branding'] = {
-              'keywords': keywords,
-              'channel': channelBranding ?? {},
-              'image': branding?['image'] ?? {},
-              'watch': branding?['watch'] ?? {},
-            };
-            ch['yt_uploads_playlist'] =
-                (contentDetails?['relatedPlaylists'] as Map<String, dynamic>?)?['uploads']?.toString() ?? '';
-            ch['yt_sync_source'] = 'oauth_or_api';
-            ch['yt_synced_at'] = DateTime.now().toIso8601String();
-            
-            updatedCount++;
-          } else {
-            // Add new channel
-            final lyrics = _ensureLyricsStructure(project);
-            final defaultLang = ((lyrics['languages'] as List?)?.isNotEmpty ?? false)
-                ? (lyrics['languages'] as List).first.toString()
-                : 'en';
-
-            existingChannels.add({
-              'channel_id': channelId,
-              'youtube_channel_id': channelId,
-              'language': defaultLang,
-              'title': title,
-              'handle': handle,
-              'description': description,
-              'keywords': keywords,
-              'brand_category': '',
-              'overall_style': 'cinematic',
-              'channel_style': '',
-              'vibe': 'experimental',
-              'visual_style': 'stylized',
-              'enabled': true,
-              'yt_custom_url': handle,
-              'yt_country': country,
-              'yt_default_language': defaultLanguage,
-              'yt_published_at': publishedAt,
-              'yt_subscriber_count': subscriberCount,
-              'yt_video_count': videoCount,
-              'yt_view_count': viewCount,
-              'yt_hidden_subscriber_count': hiddenSubscriberCount,
-              'yt_is_linked': status?['isLinked'] == true,
-              'yt_made_for_kids': status?['madeForKids'],
-              'yt_self_declared_made_for_kids': status?['selfDeclaredMadeForKids'],
-              'yt_privacy_status': status?['privacyStatus']?.toString() ?? '',
-              'yt_topic_ids': (topicDetails?['topicIds'] as List?)?.cast<dynamic>() ?? [],
-              'yt_topic_categories': (topicDetails?['topicCategories'] as List?)?.cast<dynamic>() ?? [],
-              'yt_localizations': localizations,
-              'yt_branding': {
-                'keywords': keywords,
-                'channel': channelBranding ?? {},
-                'image': branding?['image'] ?? {},
-                'watch': branding?['watch'] ?? {},
-              },
-              'yt_uploads_playlist':
-                  (contentDetails?['relatedPlaylists'] as Map<String, dynamic>?)?['uploads']?.toString() ?? '',
-              'yt_sync_source': 'oauth_or_api',
-              'yt_synced_at': DateTime.now().toIso8601String(),
-            });
-            addedCount++;
-          }
-        }
-      }
-
-      project['channels'] = existingChannels;
+      final payload = jsonDecode(response.body) as Map<String, dynamic>;
+      final accessToken = payload['access_token']?.toString() ?? '';
+      if (accessToken.isEmpty) return null;
+      final now = DateTime.now().toUtc();
+      final expiresIn = int.tryParse(payload['expires_in']?.toString() ?? '') ??
+          _defaultYouTubeAccessTokenLifetimeSeconds;
+      record['access_token'] = accessToken;
+      record['access_token_obtained_at'] = now.toIso8601String();
+      record['access_token_expires_in_seconds'] = expiresIn;
+      record['access_token_expires_at'] = now.add(Duration(seconds: expiresIn)).toIso8601String();
+      record['token_type'] = payload['token_type']?.toString() ?? 'Bearer';
+      record['scope'] = payload['scope']?.toString() ?? record['scope']?.toString() ?? '';
+      record['last_refresh_at'] = now.toIso8601String();
+      record['status'] = 'connected';
+      record['last_error'] = '';
+      channel['yt_oauth_status'] = 'connected';
+      channel['yt_oauth_updated_at'] = now.toIso8601String();
       state.touch();
       _scheduleAutosave(state);
-      
-      _showSnack('✅ Sync completed successfully!\n• Updated: $updatedCount channels\n• Added: $addedCount channels\n• Total in project: ${existingChannels.length}\n\n💾 Saving...');
+      if (!silent) {
+        _showSnack('✅ Refreshed access token for channel $channelId');
+      }
+      return accessToken;
     } catch (e) {
-      _showSnack('Error syncing channels: $e');
+      record['status'] = 'error';
+      record['last_error'] = e.toString();
+      if (!silent) {
+        _showSnack('Token refresh failed for $channelId: $e');
+      }
+      return null;
     }
   }
 
@@ -3881,6 +3826,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'vibe': 'experimental',
       'visual_style': 'stylized',
       'enabled': true,
+      'yt_oauth_status': 'not_configured',
     });
 
     project['channels'] = existingChannels;
@@ -4115,6 +4061,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'vibe': 'experimental',
         'visual_style': 'stylized',
         'enabled': true,
+        'yt_oauth_status': 'not_configured',
       });
       addedCount++;
     }
@@ -4128,11 +4075,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _testOAuthConnection(AppState state) async {
-    final youtubeSettings = state.settings['youtube'] as Map?;
-    final oauthToken = youtubeSettings?['oauth_token'] as String?;
-
-    if (oauthToken == null || oauthToken.isEmpty) {
-      _showSnack('No OAuth token found. Set up OAuth first in Settings.');
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    if (channels.isEmpty) {
+      _showSnack('Add at least one channel first.');
+      return;
+    }
+    final accessToken = await _ensureFreshChannelAccessToken(state, channels.first);
+    if (accessToken == null || accessToken.isEmpty) {
+      _showSnack('No per-channel OAuth token found. Use "Fetch refresh token" on a channel card first.');
       return;
     }
 
@@ -4147,7 +4102,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
       final userResponse = await http.get(
         userUrl,
-        headers: {'Authorization': 'Bearer $oauthToken'},
+        headers: {'Authorization': 'Bearer $accessToken'},
       );
 
       if (userResponse.statusCode == 401) {
@@ -4281,6 +4236,66 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _launchUrl(url);
   }
 
+  void _showFetchRefreshTokenDialog(AppState state, Map<String, dynamic> channel) async {
+    final youtubeSettings = state.settings['youtube'] as Map?;
+    final clientId = youtubeSettings?['client_id']?.toString() ?? '';
+    final clientSecret = youtubeSettings?['client_secret']?.toString() ?? '';
+    if (clientId.isEmpty || clientSecret.isEmpty) {
+      _showSnack('Set YouTube client ID/secret in Settings before fetching per-channel refresh tokens.');
+      return;
+    }
+    final channelLabel = channel['title']?.toString().isNotEmpty == true
+        ? channel['title'].toString()
+        : channel['channel_id']?.toString() ?? 'channel';
+    final redirectUri = 'http://localhost:8080/oauth2callback';
+    final scopes = [
+      'https://www.googleapis.com/auth/youtube',
+      'https://www.googleapis.com/auth/youtube.upload',
+      'https://www.googleapis.com/auth/youtube.force-ssl',
+    ].map(Uri.encodeComponent).join('%20');
+    final authUrl = 'https://accounts.google.com/o/oauth2/v2/auth?'
+        'client_id=$clientId&redirect_uri=${Uri.encodeComponent(redirectUri)}&response_type=code'
+        '&scope=$scopes&access_type=offline&prompt=consent&include_granted_scopes=true';
+    _showSnack('Authorize "$channelLabel" in browser, then paste the code.');
+    _launchUrl(authUrl);
+    if (!mounted) return;
+    final code = await showDialog<String>(
+      context: context,
+      barrierDismissible: false,
+      builder: (_) => _OAuthCodeDialog(),
+    );
+    if (code == null || code.isEmpty) return;
+    final tokenPayload = await _exchangeCodeForToken(clientId, clientSecret, code, redirectUri);
+    if (tokenPayload == null) return;
+    final project = state.activeProject;
+    final channelId = channel['channel_id']?.toString();
+    if (project == null || channelId == null || channelId.isEmpty) return;
+    final record = _channelOAuthRecord(project, channelId, create: true);
+    if (record == null) return;
+    final refreshToken = tokenPayload['refresh_token']?.toString() ?? '';
+    if (refreshToken.isNotEmpty) {
+      record['refresh_token'] = refreshToken;
+    }
+    final accessToken = tokenPayload['access_token']?.toString() ?? '';
+    final expiresIn = int.tryParse(tokenPayload['expires_in']?.toString() ?? '') ??
+        _defaultYouTubeAccessTokenLifetimeSeconds;
+    final now = DateTime.now().toUtc();
+    record['access_token'] = accessToken;
+    record['access_token_obtained_at'] = now.toIso8601String();
+    record['access_token_expires_in_seconds'] = expiresIn;
+    record['access_token_expires_at'] = now.add(Duration(seconds: expiresIn)).toIso8601String();
+    record['scope'] = tokenPayload['scope']?.toString() ?? '';
+    record['token_type'] = tokenPayload['token_type']?.toString() ?? 'Bearer';
+    record['last_refresh_at'] = now.toIso8601String();
+    record['status'] = 'connected';
+    record['last_error'] = '';
+    channel['yt_oauth_status'] = 'connected';
+    channel['yt_oauth_updated_at'] = now.toIso8601String();
+    state.touch();
+    _scheduleAutosave(state);
+    _showSnack('✅ Saved refresh token + access token for $channelId');
+  }
+
   void _launchUrl(String urlString) {
     unawaited(_launchUrlAsync(urlString));
   }
@@ -4345,9 +4360,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Step 3: Exchange code for token
     _showSnack('Exchanging authorization code for access token...');
-    final token = await _exchangeCodeForToken(clientId, clientSecret, code, redirectUri);
+    final tokenPayload = await _exchangeCodeForToken(clientId, clientSecret, code, redirectUri);
     
-    if (token == null || token.isEmpty) {
+    final token = tokenPayload?['access_token']?.toString() ?? '';
+    if (token.isEmpty) {
       return;
     }
 
@@ -4362,7 +4378,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     _showSnack('✅ OAuth token obtained and automatically saved to Settings!\n✅ Token also copied to clipboard for backup.');
   }
 
-  Future<String?> _exchangeCodeForToken(String clientId, String clientSecret, String code, String redirectUri) async {
+  Future<Map<String, dynamic>?> _exchangeCodeForToken(String clientId, String clientSecret, String code, String redirectUri) async {
     try {
       final url = Uri.parse('https://oauth2.googleapis.com/token');
       final response = await http.post(
@@ -4383,7 +4399,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         
         if (accessToken != null && accessToken.isNotEmpty) {
           _showSnack('✅ OAuth token obtained successfully!');
-          return accessToken;
+          return data;
         }
       }
 
