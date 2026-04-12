@@ -68,6 +68,22 @@
     },
     "channels": {}
   },
+  "youtube_projects": [
+    {
+      "project_id": "yt_project_1",
+      "api_key": "",
+      "client_id": "",
+      "client_secret": "",
+      "max_channels": 5
+    }
+  ],
+  "youtube_oauth": {
+    "token_refresh_policy": {
+      "threshold_ratio": 0.1,
+      "default_access_token_lifetime_seconds": 3600
+    },
+    "channels": {}
+  },
   "storyboard": {
     "globalMood": "hopeful cyberpunk",
     "scenes": [

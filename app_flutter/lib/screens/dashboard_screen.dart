@@ -4273,6 +4273,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     // Add generated channels to project
     final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final maxCapacity = _youtubeCredentialCapacity(project);
+    int remainingSlots = maxCapacity - existingChannels.length;
+    if (remainingSlots <= 0) {
+      _showSnack('No quota slots available. Add a project credential triple first.');
+      await _showProjectYouTubeCredentialsDialog(state);
+      return;
+    }
     final existingIds = {for (final ch in existingChannels) ch['channel_id']: true};
     final existingHandles = {for (final ch in existingChannels) (ch['handle'] as String?)?.toLowerCase() ?? '': ch};
 
