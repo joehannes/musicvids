@@ -210,7 +210,21 @@ class _SettingsDialogState extends State<SettingsDialog> {
                 ),
               ),
               const SizedBox(height: 12),
-              Text('YouTube Account', style: Theme.of(context).textTheme.titleSmall),
+              Row(
+                children: [
+                  Text('YouTube Account', style: Theme.of(context).textTheme.titleSmall),
+                  const Spacer(),
+                  OutlinedButton.icon(
+                    onPressed: () {
+                      final payload = _buildResultPayload();
+                      payload['__action'] = 'manage_project_youtube_credentials';
+                      Navigator.pop(context, payload);
+                    },
+                    icon: const Icon(Icons.folder_special, size: 16),
+                    label: const Text('Project API Credentials'),
+                  ),
+                ],
+              ),
               TextField(controller: youtubeKey, decoration: const InputDecoration(labelText: 'YouTube API Key')),
               TextField(
                 controller: youtubeClientId,
@@ -337,38 +351,42 @@ class _SettingsDialogState extends State<SettingsDialog> {
         TextButton(onPressed: () => Navigator.pop(context), child: const Text('Cancel')),
         FilledButton(
           onPressed: () {
-            Navigator.pop(context, {
-              'suno': {'token': sunoToken.text},
-              'midjourney': {'discord_token': midjourneyToken.text},
-              'youtube': {
-                'api_key': youtubeKey.text,
-                'client_id': youtubeClientId.text,
-                'client_secret': youtubeClientSecret.text,
-                'oauth_token': youtubeOAuthToken.text,
-                'account_email': youtubeEmail.text,
-                'account_handle': youtubeHandle.text,
-                'brand_channel_id': youtubeBrandChannelId.text,
-                'channel_ids': []
-              },
-              'tiktok': {'username': tiktokUser.text, 'password': tiktokPass.text},
-              'openai': {'api_key': openaiKey.text},
-              'ui': {
-                'shortcuts': {
-                  for (final shortcut in shortcutControllers.entries) shortcut.key: shortcut.value.text.trim(),
-                },
-                'custom_shortcuts': List.generate(customSequenceControllers.length, (index) {
-                  return {
-                    'sequence': customSequenceControllers[index].text.trim(),
-                    'label': customLabelControllers[index].text.trim(),
-                  };
-                }).where((entry) => (entry['sequence'] ?? '').isNotEmpty && (entry['label'] ?? '').isNotEmpty).toList(),
-                'theme': {'active': selectedThemeId},
-              },
-            });
+            Navigator.pop(context, _buildResultPayload());
           },
           child: const Text('Save'),
         ),
       ],
     );
+  }
+
+  Map<String, dynamic> _buildResultPayload() {
+    return {
+      'suno': {'token': sunoToken.text},
+      'midjourney': {'discord_token': midjourneyToken.text},
+      'youtube': {
+        'api_key': youtubeKey.text,
+        'client_id': youtubeClientId.text,
+        'client_secret': youtubeClientSecret.text,
+        'oauth_token': youtubeOAuthToken.text,
+        'account_email': youtubeEmail.text,
+        'account_handle': youtubeHandle.text,
+        'brand_channel_id': youtubeBrandChannelId.text,
+        'channel_ids': []
+      },
+      'tiktok': {'username': tiktokUser.text, 'password': tiktokPass.text},
+      'openai': {'api_key': openaiKey.text},
+      'ui': {
+        'shortcuts': {
+          for (final shortcut in shortcutControllers.entries) shortcut.key: shortcut.value.text.trim(),
+        },
+        'custom_shortcuts': List.generate(customSequenceControllers.length, (index) {
+          return {
+            'sequence': customSequenceControllers[index].text.trim(),
+            'label': customLabelControllers[index].text.trim(),
+          };
+        }).where((entry) => (entry['sequence'] ?? '').isNotEmpty && (entry['label'] ?? '').isNotEmpty).toList(),
+        'theme': {'active': selectedThemeId},
+      },
+    };
   }
 }

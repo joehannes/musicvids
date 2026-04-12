@@ -1186,8 +1186,139 @@ class _DashboardScreenState extends State<DashboardScreen> {
       builder: (_) => SettingsDialog(initial: state.settings),
     );
     if (updated != null) {
+      final action = updated.remove('__action');
       await state.saveSettings(updated);
       _showSnack('Settings and shortcut bindings saved.');
+      if (action == 'manage_project_youtube_credentials') {
+        await _showProjectYouTubeCredentialsDialog(state);
+      }
+    }
+  }
+
+  Future<void> _showProjectYouTubeCredentialsDialog(AppState state, {String? focusChannelId}) async {
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final seed = _ensureYouTubeCredentialProjects(project)
+        .map((e) => Map<String, dynamic>.from(e))
+        .toList();
+    if (!mounted) return;
+    final result = await showDialog<List<Map<String, dynamic>>>(
+      context: context,
+      builder: (ctx) {
+        final entries = seed;
+        return StatefulBuilder(
+          builder: (ctx, setLocalState) {
+            final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+            final capacity = entries.length * 5;
+            final overflow = channels.length > capacity ? channels.length - capacity : 0;
+            return AlertDialog(
+              title: const Text('Project YouTube API Credentials'),
+              content: SizedBox(
+                width: 840,
+                child: SingleChildScrollView(
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    mainAxisSize: MainAxisSize.min,
+                    children: [
+                      Text('Each credential triple supports up to 5 channel token pairs.\nCurrent capacity: $capacity channels.'),
+                      if (overflow > 0)
+                        Padding(
+                          padding: const EdgeInsets.only(top: 8),
+                          child: Text('⚠️ $overflow channel(s) exceed quota capacity and will be muted/inactive.',
+                              style: const TextStyle(color: Colors.orange)),
+                        ),
+                      const SizedBox(height: 12),
+                      for (int i = 0; i < entries.length; i++)
+                        Card(
+                          child: Padding(
+                            padding: const EdgeInsets.all(10),
+                            child: Column(
+                              children: [
+                                Row(
+                                  children: [
+                                    Text('Credential Project ${i + 1}'),
+                                    const Spacer(),
+                                    IconButton(
+                                      onPressed: () => setLocalState(() => entries.removeAt(i)),
+                                      icon: const Icon(Icons.delete),
+                                    ),
+                                  ],
+                                ),
+                                TextFormField(
+                                  initialValue: entries[i]['project_id']?.toString() ?? 'yt_project_${i + 1}',
+                                  decoration: const InputDecoration(labelText: 'Project ID'),
+                                  onChanged: (v) => entries[i]['project_id'] = v,
+                                ),
+                                const SizedBox(height: 8),
+                                TextFormField(
+                                  initialValue: entries[i]['api_key']?.toString() ?? '',
+                                  decoration: const InputDecoration(labelText: 'YouTube API Key'),
+                                  onChanged: (v) => entries[i]['api_key'] = v,
+                                ),
+                                const SizedBox(height: 8),
+                                TextFormField(
+                                  initialValue: entries[i]['client_id']?.toString() ?? '',
+                                  decoration: const InputDecoration(labelText: 'OAuth Client ID'),
+                                  onChanged: (v) => entries[i]['client_id'] = v,
+                                ),
+                                const SizedBox(height: 8),
+                                TextFormField(
+                                  initialValue: entries[i]['client_secret']?.toString() ?? '',
+                                  decoration: const InputDecoration(labelText: 'OAuth Client Secret'),
+                                  onChanged: (v) => entries[i]['client_secret'] = v,
+                                ),
+                              ],
+                            ),
+                          ),
+                        ),
+                      const SizedBox(height: 8),
+                      OutlinedButton.icon(
+                        onPressed: () => setLocalState(() {
+                          entries.add({
+                            'project_id': 'yt_project_${entries.length + 1}',
+                            'api_key': '',
+                            'client_id': '',
+                            'client_secret': '',
+                            'max_channels': 5,
+                          });
+                        }),
+                        icon: const Icon(Icons.add),
+                        label: const Text('Add credential project'),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+              actions: [
+                TextButton(onPressed: () => Navigator.pop(ctx), child: const Text('Cancel')),
+                FilledButton(onPressed: () => Navigator.pop(ctx, entries), child: const Text('Save')),
+              ],
+            );
+          },
+        );
+      },
+    );
+    if (result == null) return;
+    project['youtube_projects'] = result
+        .where((e) => (e['project_id']?.toString().trim().isNotEmpty ?? false))
+        .map((e) => {
+              'project_id': e['project_id']?.toString().trim() ?? '',
+              'api_key': e['api_key']?.toString().trim() ?? '',
+              'client_id': e['client_id']?.toString().trim() ?? '',
+              'client_secret': e['client_secret']?.toString().trim() ?? '',
+              'max_channels': 5,
+            })
+        .toList();
+    _applyYouTubeCredentialCapacity(project);
+    state.touch();
+    _scheduleAutosave(state);
+    if (focusChannelId != null) {
+      _showSnack('Saved credentials. You can now fetch OAuth token for $focusChannelId.');
+    } else {
+      _showSnack('Saved project-specific YouTube credential projects.');
     }
   }
 
@@ -1296,6 +1427,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
     final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
+    final capacity = _youtubeCredentialCapacity(project);
+    if (channels.length >= capacity) {
+      _showSnack('No quota slot left. Add another YouTube credential project first.');
+      unawaited(_showProjectYouTubeCredentialsDialog(state));
+      return;
+    }
     final lyrics = _ensureLyricsStructure(project);
     final defaultLang = ((lyrics['languages'] as List?)?.isNotEmpty ?? false) 
         ? (lyrics['languages'] as List).first.toString() 
@@ -1317,6 +1454,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       'yt_oauth_status': 'not_configured',
     });
     project['channels'] = channels;
+    _applyYouTubeCredentialCapacity(project);
     state.touch();
     _scheduleAutosave(state);
     _showSnack('Channel added.');
@@ -1815,6 +1953,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     final project = state.activeProject;
     if (project == null) return const Center(child: Text('Load a project first.'));
     _ensureChannelOAuthHydration(state);
+    _applyYouTubeCredentialCapacity(project);
     final channels = (project['channels'] as List?)?.cast<Map>() ?? [];
     final lyrics = _ensureLyricsStructure(project);
     final availableLangs = (lyrics['languages'] as List?)?.cast<String>() ?? ['en'];
@@ -1890,12 +2029,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         final isEnabled = ch['enabled'] ?? true;
         final channelLang = ch['language']?.toString() ?? 'en';
         final isLanguageMuted = !availableLangs.contains(channelLang);
+        final isQuotaBlocked = ch['yt_quota_blocked'] == true;
         final isExpanded = _expandedChannels[index] ?? false;
 
         return SizedBox(
           width: 320,
           child: Card(
-            color: isLanguageMuted ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
+            color: (isLanguageMuted || isQuotaBlocked) ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
             child: Padding(
               padding: const EdgeInsets.all(12),
               child: isExpanded
@@ -2082,8 +2222,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   Widget _buildYoutubeChannelCard(AppState state, int index, Map<String, dynamic> ch, bool isEnabled, String channelLang, bool isLanguageMuted, List<String> availableLangs) {
+    final isQuotaBlocked = ch['yt_quota_blocked'] == true;
+    final isMuted = isLanguageMuted || isQuotaBlocked;
     return Card(
-      color: isLanguageMuted ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
+      color: isMuted ? Theme.of(context).colorScheme.surface.withOpacity(0.5) : null,
       child: Padding(
         padding: const EdgeInsets.all(12),
         child: Column(
@@ -2141,11 +2283,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
             
             // Language field (code only) with available languages
             Opacity(
-              opacity: isLanguageMuted ? 0.6 : 1.0,
+              opacity: isMuted ? 0.6 : 1.0,
               child: SizedBox(
                 width: 120,
                 child: Tooltip(
-                  message: isLanguageMuted
+                  message: isQuotaBlocked
+                      ? 'This channel is blocked: no YouTube credential project quota slot available.'
+                      : isLanguageMuted
                       ? 'This language is not used in the lyrics section. Add it to lyrics first.'
                       : 'Language used for content generation',
                   child: DropdownButtonFormField<String>(
@@ -2156,7 +2300,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                               child: Text(lang.toUpperCase()),
                             ))
                         .toList(),
-                    onChanged: isLanguageMuted
+                    onChanged: isMuted
                         ? null
                         : (v) {
                             if (v != null) {
@@ -2170,7 +2314,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                       border: const OutlineInputBorder(),
                       contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                       isDense: true,
-                      helperText: isLanguageMuted ? 'Not defined' : null,
+                      helperText: isQuotaBlocked ? 'No project quota slot' : (isLanguageMuted ? 'Not defined' : null),
                     ),
                   ),
                 ),
@@ -2336,7 +2480,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   const SizedBox(height: 12),
                   _buildYoutubeMetadataPanel(ch),
                   
-                  if (isLanguageMuted)
+                  if (isMuted)
                     Container(
                       margin: const EdgeInsets.only(top: 12),
                       padding: const EdgeInsets.all(8),
@@ -2351,7 +2495,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           const SizedBox(width: 8),
                           Expanded(
                             child: Text(
-                              'This channel language ($channelLang) is not defined in Lyrics. Add this language to the Lyrics section to enable editing.',
+                              isQuotaBlocked
+                                  ? 'No YouTube credential project slot is available for this channel. Add another credential project.'
+                                  : 'This channel language ($channelLang) is not defined in Lyrics. Add this language to the Lyrics section to enable editing.',
                               style: Theme.of(context).textTheme.bodySmall,
                             ),
                           ),
@@ -2365,6 +2511,8 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
   Widget _buildYoutubeChannelExpandedContent(AppState state, int index, Map<String, dynamic> ch, bool isEnabled, String channelLang, bool isLanguageMuted, List<String> availableLangs) {
+    final isQuotaBlocked = ch['yt_quota_blocked'] == true;
+    final isMuted = isLanguageMuted || isQuotaBlocked;
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
@@ -2381,11 +2529,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
         
         // Language field (code only)
         Opacity(
-          opacity: isLanguageMuted ? 0.6 : 1.0,
+          opacity: isMuted ? 0.6 : 1.0,
           child: SizedBox(
             width: 120,
             child: Tooltip(
-              message: isLanguageMuted
+              message: isQuotaBlocked
+                  ? 'This channel is blocked: no YouTube credential project quota slot available.'
+                  : isLanguageMuted
                   ? 'This language is not used in the lyrics section. Add it to lyrics first.'
                   : 'Language used for content generation',
               child: DropdownButtonFormField<String>(
@@ -2396,7 +2546,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                           child: Text(lang.toUpperCase()),
                         ))
                     .toList(),
-                onChanged: isLanguageMuted
+                onChanged: isMuted
                     ? null
                     : (v) {
                         if (v != null) {
@@ -2410,7 +2560,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                   border: const OutlineInputBorder(),
                   contentPadding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
                   isDense: true,
-                  helperText: isLanguageMuted ? 'Not defined' : null,
+                  helperText: isQuotaBlocked ? 'No project quota slot' : (isLanguageMuted ? 'Not defined' : null),
                 ),
               ),
             ),
@@ -2576,7 +2726,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
         const SizedBox(height: 12),
         _buildYoutubeMetadataPanel(ch),
         
-        if (isLanguageMuted)
+        if (isMuted)
           Container(
             margin: const EdgeInsets.only(top: 12),
             padding: const EdgeInsets.all(8),
@@ -2591,7 +2741,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 const SizedBox(width: 8),
                 Expanded(
                   child: Text(
-                    'This channel language ($channelLang) is not defined in Lyrics. Add this language to the Lyrics section to enable editing.',
+                    isQuotaBlocked
+                        ? 'No YouTube credential project slot is available for this channel. Add another credential project.'
+                        : 'This channel language ($channelLang) is not defined in Lyrics. Add this language to the Lyrics section to enable editing.',
                     style: Theme.of(context).textTheme.bodySmall,
                   ),
                 ),
@@ -2605,6 +2757,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
   Widget _buildChannelOAuthPanel(AppState state, Map<String, dynamic> ch) {
     final project = state.activeProject;
     final channelId = ch['channel_id']?.toString() ?? '';
+    final credential = project == null ? null : _credentialProjectForChannel(project, ch);
+    final hasCredentialProject = credential != null;
+    final credentialProjectId = credential?['project_id']?.toString() ?? '';
     final tokenRecord = project == null || channelId.isEmpty ? null : _channelOAuthRecord(project, channelId);
     final status = tokenRecord?['status']?.toString() ?? 'not_configured';
     final expiresAt = tokenRecord?['access_token_expires_at']?.toString() ?? '';
@@ -2623,9 +2778,15 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 Text('Channel OAuth', style: Theme.of(context).textTheme.labelLarge),
                 const Spacer(),
                 OutlinedButton.icon(
-                  onPressed: () => _showFetchRefreshTokenDialog(state, ch),
+                  onPressed: hasCredentialProject ? () => _showFetchRefreshTokenDialog(state, ch) : null,
                   icon: const Icon(Icons.lock_open, size: 16),
                   label: const Text('Fetch refresh token'),
+                ),
+                const SizedBox(width: 8),
+                OutlinedButton.icon(
+                  onPressed: () => _showProjectYouTubeCredentialsDialog(state, focusChannelId: channelId),
+                  icon: const Icon(Icons.playlist_add, size: 16),
+                  label: const Text('Add credential project'),
                 ),
                 const SizedBox(width: 8),
                 OutlinedButton.icon(
@@ -2636,8 +2797,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
               ],
             ),
             const SizedBox(height: 6),
+            Text('Credential project: ${hasCredentialProject ? credentialProjectId : 'missing'}'),
             Text('Status: $status${isExpiring ? ' (access token expiring)' : ''}'),
             Text('Refresh token saved: ${hasRefresh ? 'yes' : 'no'}'),
+            if (!hasCredentialProject)
+              const Text('⚠️ Missing project-specific API credential assignment. This channel is inactive until added.',
+                  style: TextStyle(color: Colors.orange)),
             if (expiresAt.isNotEmpty) Text('Access token expires at: $expiresAt'),
           ],
         ),
@@ -2689,8 +2854,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
   void _syncChannel(AppState state, Map<String, dynamic> channel) async {
     final project = state.activeProject;
     if (project == null) return;
-    final youtubeSettings = state.settings['youtube'] as Map?;
-    final apiKey = youtubeSettings?['api_key']?.toString() ?? '';
+    final credential = _credentialProjectForChannel(project, channel);
+    final apiKey = credential?['api_key']?.toString() ?? '';
+    if (credential == null) {
+      _showSnack('No project credential slot available for this channel.');
+      return;
+    }
     final channelId = channel['channel_id']?.toString() ?? '';
     if (channelId.isEmpty) {
       _showSnack('Channel ID is required for sync.');
@@ -2884,6 +3053,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
       }
 
       project['channels'] = existingChannels;
+      _applyYouTubeCredentialCapacity(project);
       state.touch();
       _showSnack('✓ Imported ${importedChannels.length} channels successfully.');
       
@@ -3321,8 +3491,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
       return;
     }
 
-    final youtubeSettings = state.settings['youtube'] as Map?;
-    final apiKey = youtubeSettings?['api_key']?.toString() ?? '';
     final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
     if (channels.isEmpty) {
       _showSnack('No channels configured yet.');
@@ -3335,6 +3503,13 @@ class _DashboardScreenState extends State<DashboardScreen> {
     int failedCount = 0;
 
     for (final ch in channels) {
+      final credential = _credentialProjectForChannel(project, ch);
+      final apiKey = credential?['api_key']?.toString() ?? '';
+      if (credential == null) {
+        ch['yt_quota_blocked'] = true;
+        failedCount++;
+        continue;
+      }
       final channelId = ch['channel_id']?.toString() ?? '';
       if (channelId.isEmpty) {
         failedCount++;
@@ -3426,6 +3601,73 @@ class _DashboardScreenState extends State<DashboardScreen> {
     state.touch();
     _scheduleAutosave(state);
     _showSnack('✅ Channel sync complete. Updated: $updatedCount, failed: $failedCount');
+  }
+
+  List<Map<String, dynamic>> _ensureYouTubeCredentialProjects(Map<String, dynamic> project) {
+    final existing = (project['youtube_projects'] as List?)?.cast<Map>() ?? [];
+    final list = existing.map((e) => e.cast<String, dynamic>()).toList();
+    project['youtube_projects'] = list;
+    return list;
+  }
+
+  int _youtubeCredentialCapacity(Map<String, dynamic> project) {
+    return _ensureYouTubeCredentialProjects(project).length * 5;
+  }
+
+  Map<String, dynamic>? _credentialProjectForChannel(Map<String, dynamic> project, Map<String, dynamic> channel) {
+    final projects = _ensureYouTubeCredentialProjects(project);
+    final assignedId = channel['yt_project_id']?.toString() ?? '';
+    if (assignedId.isNotEmpty) {
+      for (final entry in projects) {
+        if (entry['project_id']?.toString() == assignedId) return entry;
+      }
+    }
+    if (projects.isEmpty) return null;
+    final counts = <String, int>{for (final p in projects) p['project_id']?.toString() ?? '': 0};
+    final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    for (final ch in channels) {
+      final pid = ch['yt_project_id']?.toString() ?? '';
+      if (counts.containsKey(pid)) counts[pid] = (counts[pid] ?? 0) + 1;
+    }
+    for (final entry in projects) {
+      final pid = entry['project_id']?.toString() ?? '';
+      if (pid.isEmpty) continue;
+      final used = counts[pid] ?? 0;
+      if (used < 5) {
+        channel['yt_project_id'] = pid;
+        return entry;
+      }
+    }
+    return null;
+  }
+
+  void _applyYouTubeCredentialCapacity(Map<String, dynamic> project) {
+    final channels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final projects = _ensureYouTubeCredentialProjects(project);
+    final counts = <String, int>{for (final p in projects) p['project_id']?.toString() ?? '': 0};
+    for (final ch in channels) {
+      ch['yt_quota_blocked'] = false;
+      final pid = ch['yt_project_id']?.toString() ?? '';
+      if (pid.isNotEmpty && counts.containsKey(pid) && (counts[pid] ?? 0) < 5) {
+        counts[pid] = (counts[pid] ?? 0) + 1;
+        continue;
+      }
+      bool assigned = false;
+      for (final p in projects) {
+        final projectId = p['project_id']?.toString() ?? '';
+        if (projectId.isEmpty) continue;
+        if ((counts[projectId] ?? 0) < 5) {
+          ch['yt_project_id'] = projectId;
+          counts[projectId] = (counts[projectId] ?? 0) + 1;
+          assigned = true;
+          break;
+        }
+      }
+      if (!assigned) {
+        ch['yt_quota_blocked'] = true;
+      }
+    }
+    project['channels'] = channels;
   }
 
   void _ensureChannelOAuthHydration(AppState state) {
@@ -3548,9 +3790,9 @@ class _DashboardScreenState extends State<DashboardScreen> {
 
     final refreshToken = record['refresh_token']?.toString() ?? '';
     if (refreshToken.isEmpty) return null;
-    final youtubeSettings = state.settings['youtube'] as Map?;
-    final clientId = youtubeSettings?['client_id']?.toString() ?? '';
-    final clientSecret = youtubeSettings?['client_secret']?.toString() ?? '';
+    final credential = _credentialProjectForChannel(project, channel);
+    final clientId = credential?['client_id']?.toString() ?? '';
+    final clientSecret = credential?['client_secret']?.toString() ?? '';
     if (clientId.isEmpty || clientSecret.isEmpty) {
       if (!silent) {
         _showSnack('Missing YouTube client credentials in Settings.');
@@ -3764,6 +4006,19 @@ class _DashboardScreenState extends State<DashboardScreen> {
     }
 
     final existingChannels = (project['channels'] as List?)?.cast<Map<String, dynamic>>() ?? [];
+    final maxCapacity = _youtubeCredentialCapacity(project);
+    int remainingSlots = maxCapacity - existingChannels.length;
+    if (remainingSlots <= 0) {
+      _showSnack('No quota slots available. Add a project credential triple first.');
+      await _showProjectYouTubeCredentialsDialog(state);
+      return;
+    }
+    final capacity = _youtubeCredentialCapacity(project);
+    if (existingChannels.length >= capacity) {
+      _showSnack('Channel limit reached for current YouTube credential projects. Add another credential project first.');
+      await _showProjectYouTubeCredentialsDialog(state);
+      return;
+    }
     
     // Determine if input is @handle or channel ID
     final isHandle = channelInput.startsWith('@') || !channelInput.startsWith('UC');
@@ -3773,9 +4028,12 @@ class _DashboardScreenState extends State<DashboardScreen> {
     // If input is a handle, try to resolve it
     if (isHandle && resolvedChannelId == null) {
       _showSnack('Resolving @handle: $inputHandle...');
-      final youtubeSettings = state.settings['youtube'] as Map?;
-      final apiKey = youtubeSettings?['api_key']?.toString();
-      final oauthToken = youtubeSettings?['oauth_token']?.toString();
+      final credential = _credentialProjectForChannel(project, {
+        'channel_id': 'temp_handle_resolution',
+        'yt_project_id': '',
+      });
+      final apiKey = credential?['api_key']?.toString();
+      final oauthToken = credential == null ? null : '';
       resolvedChannelId = await _resolveYouTubeHandleToChannelId(
         channelInput,
         apiKey: apiKey,
@@ -3830,6 +4088,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
     });
 
     project['channels'] = existingChannels;
+    _applyYouTubeCredentialCapacity(project);
     state.touch();
     _scheduleAutosave(state);
     _showSnack('✅ Channel added! ${isHandle ? 'Handle will be resolved during sync.' : ''}');
@@ -4027,6 +4286,10 @@ class _DashboardScreenState extends State<DashboardScreen> {
         : 'en';
 
     for (final channelData in generatedChannels.values) {
+      if (remainingSlots <= 0) {
+        skippedCount += (generatedChannels.length - addedCount - skippedCount - mergedCount);
+        break;
+      }
       final channelId = channelData['channel_id']!;
       final handle = channelData['handle']!;
 
@@ -4064,9 +4327,11 @@ class _DashboardScreenState extends State<DashboardScreen> {
         'yt_oauth_status': 'not_configured',
       });
       addedCount++;
+      remainingSlots--;
     }
 
     project['channels'] = existingChannels;
+    _applyYouTubeCredentialCapacity(project);
     state.touch();
     _scheduleAutosave(state);
 
@@ -4237,11 +4502,16 @@ class _DashboardScreenState extends State<DashboardScreen> {
   }
 
   void _showFetchRefreshTokenDialog(AppState state, Map<String, dynamic> channel) async {
-    final youtubeSettings = state.settings['youtube'] as Map?;
-    final clientId = youtubeSettings?['client_id']?.toString() ?? '';
-    final clientSecret = youtubeSettings?['client_secret']?.toString() ?? '';
+    final project = state.activeProject;
+    if (project == null) {
+      _showSnack('Load a project first.');
+      return;
+    }
+    final credential = _credentialProjectForChannel(project, channel);
+    final clientId = credential?['client_id']?.toString() ?? '';
+    final clientSecret = credential?['client_secret']?.toString() ?? '';
     if (clientId.isEmpty || clientSecret.isEmpty) {
-      _showSnack('Set YouTube client ID/secret in Settings before fetching per-channel refresh tokens.');
+      _showSnack('Set client ID/secret in a project credential triple before fetching channel refresh tokens.');
       return;
     }
     final channelLabel = channel['title']?.toString().isNotEmpty == true
@@ -4267,7 +4537,6 @@ class _DashboardScreenState extends State<DashboardScreen> {
     if (code == null || code.isEmpty) return;
     final tokenPayload = await _exchangeCodeForToken(clientId, clientSecret, code, redirectUri);
     if (tokenPayload == null) return;
-    final project = state.activeProject;
     final channelId = channel['channel_id']?.toString();
     if (project == null || channelId == null || channelId.isEmpty) return;
     final record = _channelOAuthRecord(project, channelId, create: true);
@@ -4429,6 +4698,7 @@ class _DashboardScreenState extends State<DashboardScreen> {
                 if (index >= 0 && index < channels.length) {
                   channels.removeAt(index);
                   project['channels'] = channels;
+                  _applyYouTubeCredentialCapacity(project);
                   state.touch();
                   _scheduleAutosave(state);
                   Navigator.pop(context);

@@ -82,6 +82,7 @@ class ProjectConfig(BaseModel):
     storyboard: Storyboard = Field(default_factory=lambda: Storyboard(globalMood="cinematic", scenes=[]))
     characters: list[dict[str, Any]] = Field(default_factory=list)
     youtube_oauth: dict[str, Any] = Field(default_factory=dict)
+    youtube_projects: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class TransitionDecision(BaseModel):
