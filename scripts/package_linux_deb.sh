@@ -2,30 +2,30 @@
 set -euo pipefail
 
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+SCRIPTS_DIR="$ROOT_DIR/scripts"
 APP_DIR="$ROOT_DIR/app_flutter"
 BACKEND_DIR="$ROOT_DIR/backend_python"
 BUILD_BUNDLE="$APP_DIR/build/linux/x64/release/bundle"
 PKG_ROOT="$APP_DIR/build/linux/x64/release/deb_pkg"
+VERSION_FILE="$SCRIPTS_DIR/version.txt"
 
-CURRENT_PUBSPEC_VERSION=$(awk '/^version:/{print $2; exit}' "$APP_DIR/pubspec.yaml")
-CURRENT_CORE="${CURRENT_PUBSPEC_VERSION%%+*}"
-CURRENT_BUILD="${CURRENT_PUBSPEC_VERSION#*+}"
-if [[ "$CURRENT_BUILD" == "$CURRENT_PUBSPEC_VERSION" ]]; then
-  CURRENT_BUILD="0"
+if [[ ! -f "$VERSION_FILE" ]]; then
+  echo "0.1.0" > "$VERSION_FILE"
 fi
-IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_CORE"
 
-NEXT_PATCH=$((PATCH + 1))
-NEXT_BUILD=$((CURRENT_BUILD + 1))
-AUTO_VERSION="${MAJOR}.${MINOR}.${NEXT_PATCH}+${NEXT_BUILD}"
+CURRENT_VERSION="$(tr -d '[:space:]' < "$VERSION_FILE")"
+if [[ ! "$CURRENT_VERSION" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+  echo "Invalid version in $VERSION_FILE: $CURRENT_VERSION"
+  exit 1
+fi
 
-VERSION="${1:-$AUTO_VERSION}"
+IFS='.' read -r MAJOR MINOR PATCH <<< "$CURRENT_VERSION"
+NEXT_VERSION="${MAJOR}.${MINOR}.$((PATCH + 1))"
+
+VERSION="${1:-$CURRENT_VERSION}"
 ARCH="amd64"
 PKG_NAME="musicvids-studio"
-PUBSPEC_VERSION="$VERSION"
-if [[ "$PUBSPEC_VERSION" != *"+"* ]]; then
-  PUBSPEC_VERSION="${PUBSPEC_VERSION}+${NEXT_BUILD}"
-fi
+PUBSPEC_VERSION="${VERSION}+1"
 
 DEB_VERSION="${PUBSPEC_VERSION%%+*}"
 
@@ -101,6 +101,8 @@ PY
   cd "$APP_DIR"
   flutter clean
   flutter pub get
+  export CC=gcc
+  export CXX=g++
   flutter build linux --release
 )
 
@@ -155,3 +157,5 @@ EOF2
 dpkg-deb --build "$PKG_ROOT" "$APP_DIR/build/linux/x64/release/${PKG_NAME}_${DEB_VERSION}_${ARCH}.deb"
 
 echo "Built package: $APP_DIR/build/linux/x64/release/${PKG_NAME}_${DEB_VERSION}_${ARCH}.deb"
+echo "$NEXT_VERSION" > "$VERSION_FILE"
+echo "Updated $VERSION_FILE -> $NEXT_VERSION"
