@@ -3,6 +3,14 @@
   "root_path": "../projects/biblestories",
   "lyrics": {},
   "channels": [],
+  "youtube_oauth": {
+    "token_refresh_policy": {
+      "threshold_ratio": 0.1,
+      "default_access_token_lifetime_seconds": 3600
+    },
+    "channels": {}
+  },
+  "youtube_projects": [],
   "storyboard": {
     "globalMood": "cinematic",
     "scenes": []

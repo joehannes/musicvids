@@ -21,7 +21,7 @@ class TouchShortcutsGuide extends StatefulWidget {
 
 class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
   String? _selectedCategory;
-  final Map<String, IconData> _categoryIcons = {
+  final Map<String, FaIconData> _categoryIcons = {
     'Navigation': FontAwesomeIcons.compass,
     'Project': FontAwesomeIcons.file,
     'Channel': FontAwesomeIcons.tv,
@@ -33,7 +33,7 @@ class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
     'Custom': FontAwesomeIcons.star,
   };
 
-  final Map<String, IconData> _actionIcons = {
+  final Map<String, FaIconData> _actionIcons = {
     'new': FontAwesomeIcons.plus,
     'save': FontAwesomeIcons.floppyDisk,
     'open': FontAwesomeIcons.folderOpen,
@@ -52,7 +52,7 @@ class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
     'previous': FontAwesomeIcons.chevronLeft,
   };
 
-  IconData _extractActionIcon(String action) {
+  FaIconData _extractActionIcon(String action) {
     final lower = action.toLowerCase();
     for (final entry in _actionIcons.entries) {
       if (lower.contains(entry.key)) {
@@ -139,7 +139,7 @@ class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
                             child: Row(
                               mainAxisAlignment: MainAxisAlignment.center,
                               children: [
-                                Icon(
+                                FaIcon(
                                   FontAwesomeIcons.chevronLeft,
                                   size: 14,
                                   color:
@@ -221,7 +221,7 @@ class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
                                           .primaryContainer
                                           .withOpacity(0.3),
                                     ),
-                                    child: Icon(
+                                    child: FaIcon(
                                       icon,
                                       size: 16,
                                       color: Theme.of(context)
@@ -240,7 +240,7 @@ class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
                                           .labelSmall,
                                     ),
                                   ),
-                                  Icon(
+                                  FaIcon(
                                     FontAwesomeIcons.chevronRight,
                                     size: 12,
                                     color: Theme.of(context)
@@ -289,7 +289,7 @@ class _TouchShortcutsGuideState extends State<TouchShortcutsGuide> {
                                           .secondaryContainer
                                           .withOpacity(0.3),
                                     ),
-                                    child: Icon(
+                                    child: FaIcon(
                                       icon,
                                       size: 16,
                                       color: Theme.of(context)
